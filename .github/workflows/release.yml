@@ -1,0 +1,401 @@
+name: Release
+
+# Self-versioning native builds for Nevaska's two release channels.
+#
+#   • push to `main`    → stable release  vX.Y.Z            (marked "Latest")
+#   • push to `testing` → beta release    vX.Y.Z-testing.N  (marked "Pre-release")
+#
+# No other branch publishes anything: the channel comes from the branch name via
+# scripts/release-version.mjs, which fails on anything but those two.
+on:
+  push:
+    branches:
+      - main
+      - testing
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "docs/**"
+      - "LICENSE"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version increment (relative to the latest stable release)"
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      publish:
+        description: "Publish a release (uncheck for a test build)"
+        type: boolean
+        default: true
+
+run-name: Release ${{ github.ref_name }} (${{ github.ref_name == 'main' && 'stable' || 'beta' }})
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BETA_POINTER_TAG: channel-testing
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      tag: ${{ steps.calc.outputs.tag }}
+      channel: ${{ steps.calc.outputs.channel }}
+      publish: ${{ steps.calc.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Resolve the next version
+        id: calc
+        env:
+          BUMP: ${{ inputs.bump }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          node scripts/release-version.mjs --branch "$GITHUB_REF_NAME" --bump "$BUMP"
+          echo "publish=${PUBLISH:-true}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the release and open it as a draft
+        if: steps.calc.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.calc.outputs.tag }}
+          CHANNEL: ${{ steps.calc.outputs.channel }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$CHANNEL" = "testing" ]; then
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease \
+                --title "Nevaska $TAG (beta)" --generate-notes
+            else
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+                --title "Nevaska $TAG" --generate-notes
+            fi
+          fi
+
+  validate:
+    name: Validate release source
+    needs: version
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply version and update channel
+        run: |
+          node scripts/apply-version.mjs \
+            --version "${{ needs.version.outputs.version }}" \
+            --channel "${{ needs.version.outputs.channel }}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Typecheck and test
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Check the Linux Rust backend
+        run: |
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: [version, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            label: Windows x64 (NSIS)
+            runner: windows-latest
+            bundles: nsis
+            target_args: ""
+            rust_targets: ""
+            bundle_dir: src-tauri/target/release/bundle
+          - platform: macos
+            label: macOS universal (DMG)
+            runner: macos-latest
+            bundles: app,dmg
+            target_args: --target universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundle_dir: src-tauri/target/universal-apple-darwin/release/bundle
+          - platform: linux
+            label: Linux x64 (deb + AppImage)
+            runner: ubuntu-22.04
+            bundles: deb,appimage
+            target_args: ""
+            rust_targets: ""
+            bundle_dir: src-tauri/target/release/bundle
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            patchelf \
+            libfuse2 \
+            xdg-utils
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-${{ matrix.platform }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply version and update channel
+        run: |
+          node scripts/apply-version.mjs \
+            --version "${{ needs.version.outputs.version }}" \
+            --channel "${{ needs.version.outputs.channel }}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Configure optional macOS code signing
+        if: matrix.platform == 'macos'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          CONFIGURED_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "No Apple certificate configured; using ad-hoc signing."
+            exit 0
+          fi
+          test -n "${APPLE_CERTIFICATE_PASSWORD:-}"
+          test -n "${KEYCHAIN_PASSWORD:-}"
+          test -n "${CONFIGURED_SIGNING_IDENTITY:-}"
+          KEYCHAIN_PATH="$RUNNER_TEMP/nevaska-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/apple-certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/apple-certificate.p12" \
+            -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          echo "APPLE_SIGNING_IDENTITY=$CONFIGURED_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build native bundles and signed updater artifact
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ] || [ "${#APPLE_TEAM_ID}" -lt 3 ]; then
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID || true
+            echo "Skipping Apple notarization (credentials incomplete)."
+          fi
+          npm run tauri build -- --bundles "${{ matrix.bundles }}" ${{ matrix.target_args }}
+
+      - name: Stage release assets
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          BUNDLE_DIR: ${{ matrix.bundle_dir }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          stage_files() {
+            local dir="$1"
+            local f
+            for f in "$dir"/*; do
+              if [ -f "$f" ]; then
+                cp "$f" release-assets/
+              fi
+            done
+          }
+          case "$PLATFORM" in
+            windows)
+              stage_files "$BUNDLE_DIR/nsis"
+              ;;
+            linux)
+              stage_files "$BUNDLE_DIR/deb"
+              stage_files "$BUNDLE_DIR/appimage"
+              ;;
+            macos)
+              stage_files "$BUNDLE_DIR/dmg"
+              UPDATER="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+              if [ -z "$UPDATER" ]; then
+                echo "No .app.tar.gz updater artifact under $BUNDLE_DIR/macos" >&2
+                find "$BUNDLE_DIR" -type f -print >&2 || true
+                exit 1
+              fi
+              if [ ! -f "$UPDATER.sig" ]; then
+                echo "Missing signature for $UPDATER" >&2
+                exit 1
+              fi
+              STAGED="release-assets/Nevaska_${VERSION}_universal.app.tar.gz"
+              cp "$UPDATER" "$STAGED"
+              cp "$UPDATER.sig" "$STAGED.sig"
+              ;;
+            *)
+              echo "unknown platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          find release-assets -maxdepth 1 -type f -print
+
+      - name: Upload native build output
+        uses: actions/upload-artifact@v5
+        with:
+          name: nevaska-release-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    name: Assemble release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: nevaska-release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Build the multi-platform update manifest
+        run: |
+          node scripts/updater-manifest.mjs \
+            --version "${{ needs.version.outputs.version }}" \
+            --tag "${{ needs.version.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle-dir release-assets \
+            --notes "$(git log -1 --pretty=%s)"
+
+      - name: Upload every installer and the manifest to the release
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.version.outputs.tag }}" \
+            release-assets/* latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Keep the complete unpublished release as a workflow artifact
+        if: needs.version.outputs.publish != 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: nevaska-${{ needs.version.outputs.channel }}-${{ needs.version.outputs.version }}
+          path: |
+            release-assets/*
+            latest.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, manifest]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.version.outputs.tag }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Publish the stable release
+        if: needs.version.outputs.channel == 'stable'
+        run: gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+
+      - name: Publish the beta release
+        if: needs.version.outputs.channel == 'testing'
+        run: gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease --latest=false
+
+      - name: Point the beta channel at this release
+        if: needs.version.outputs.channel == 'testing'
+        run: |
+          set -euo pipefail
+          mkdir -p beta-channel
+          gh release download "$TAG" --repo "$REPO" \
+            --pattern latest.json --pattern "*.exe" --dir beta-channel
+          INSTALLER="$(find beta-channel -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$INSTALLER"
+          mv "$INSTALLER" beta-channel/nevaska-beta-setup.exe
+          if ! gh release view "$BETA_POINTER_TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$BETA_POINTER_TAG" --repo "$REPO" --prerelease \
+              --target "$GITHUB_SHA" --title "Beta channel manifest" \
+              --notes "Permanent download and update pointer for the newest Nevaska beta."
+          fi
+          gh release upload "$BETA_POINTER_TAG" \
+            beta-channel/latest.json beta-channel/nevaska-beta-setup.exe \
+            --repo "$REPO" --clobber

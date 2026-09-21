@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Nevaska",
   "version": "0.1.0",
-  "identifier": "com.jubar.tauri-app",
+  "identifier": "dev.slop.nevaska",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,9 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Nevaska",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 880,
+        "minHeight": 620,
+        "resizable": true,
+        "center": true,
+        "backgroundColor": "#151515"
       }
     ],
     "security": {
@@ -23,13 +28,37 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis",
+      "deb",
+      "appimage",
+      "dmg"
+    ],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwNTM4QUM3MkNGRTlDNTgKUldSWW5QNHN4NHBUWU5qaEwzeVZUelI3OXN2TWx4UmxhaTZwM0xOQnFxQ2FkeVRLT05HWG9WeDEK",
+      "endpoints": [
+        "https://github.com/nevaska/nevaska/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -164,5 +164,10 @@ draft; the private key must match the public key already embedded in the app.
 ```bash
 npm test
 npm run typecheck
-cd src-tauri && cargo test
+npm run test:rust
 ```
+
+The fake UCI engine is enabled only by the `test-support` Cargo feature and lives
+under `tests/support`. CI enables that feature for tests, but release packaging
+does not: test executables must not be shipped in native installers (in
+particular the universal macOS bundle).

@@ -98,7 +98,7 @@ export function buildManifest({ version, repo, tag, notes = "", pubDate = new Da
 
 export function parseArgs(argv) {
   const args = {
-    repo: process.env.GITHUB_REPOSITORY || "nevaska/nevaska",
+    repo: process.env.GITHUB_REPOSITORY || "MusicMaster4/Nevaska",
     bundleDir: DEFAULT_BUNDLE_DIR,
     out: "latest.json",
     notes: "",

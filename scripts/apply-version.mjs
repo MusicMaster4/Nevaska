@@ -17,7 +17,7 @@ import { channelOf, parseVersion } from "../src/lib/version.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CRATE = "nevaska";
-export const DEFAULT_REPO = "nevaska/nevaska";
+export const DEFAULT_REPO = "MusicMaster4/Nevaska";
 
 /**
  * Where a build of `channel` looks for updates.

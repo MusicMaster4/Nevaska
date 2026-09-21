@@ -1,5 +1,9 @@
 # Releases and updates
 
+This pipeline follows [Duckweed's desktop release flow](https://github.com/MusicMaster4/Duckweed/blob/main/docs/releases.md).
+The production repository is `MusicMaster4/Nevaska`. Local builds default to
+that repository; CI stamps the actual repository into the app configuration.
+
 Nevaska ships from two branches, on two update channels that never see each
 other's releases.
 
@@ -144,9 +148,16 @@ other channel. Both locks are covered by tests.
 
 ## Checking for updates in the app
 
-Open the updates panel from the top-right control. A check you started yourself
-always reports what happened. Confirming an available update downloads it and
-runs the installer.
+Open **Updates** in the top-right corner, then **Check for updates**. The panel
+shows the installed version and its stable or beta channel. **Download and
+install** downloads the signed package, shows progress, installs it and restarts
+the app. Failed checks and installations show an error and can be retried.
+The native updater and frontend both reject versions from the other channel.
+
+Before a channel's first published release, its update URL returns an error
+because no manifest exists yet. Draft releases are not available to installed
+apps. The release workflow checks for the signing key before creating a tag or
+draft; the private key must match the public key already embedded in the app.
 
 ## Testing the pipeline
 

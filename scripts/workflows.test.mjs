@@ -26,6 +26,13 @@ function runSteps(workflow) {
 }
 
 describe("release triggers", () => {
+  test("missing signing credentials stop the workflow before creating drafts", () => {
+    const steps = release.jobs.version.steps;
+    const preflight = steps.findIndex((step) => step.run?.includes('::error::Configure TAURI_SIGNING_PRIVATE_KEY'));
+    const draft = steps.findIndex((step) => step.run?.includes('gh release create'));
+    assert.ok(preflight >= 0 && preflight < draft);
+    assert.match(steps[preflight].env.TAURI_SIGNING_PRIVATE_KEY, /secrets.TAURI_SIGNING_PRIVATE_KEY/);
+  });
   test("only main and testing can start a release", () => {
     assert.deepEqual(release.on.push.branches, ["main", "testing"]);
     for (const branch of release.on.push.branches) assert.ok(channelForBranch(branch));
@@ -169,6 +176,14 @@ describe("CI workflow", () => {
 });
 
 describe("the shipped app configuration", () => {
+  test("local builds default to the actual production repository", () => {
+    assert.equal(endpointFor("stable"), "https://github.com/MusicMaster4/Nevaska/releases/latest/download/latest.json");
+    assert.match(read("src-tauri/src/channel.rs"), /DEFAULT_REPO: &str = "MusicMaster4\/Nevaska"/);
+  });
+
+  test("the native updater enforces the same channel policy as the frontend", () => {
+    assert.match(read("src-tauri/src/lib.rs"), /default_version_comparator\([\s\S]*?channel::accept_update/);
+  });
   test("reads the endpoint of the channel its version belongs to, and only that one", () => {
     const endpoints = tauriConfig.plugins.updater.endpoints;
     assert.equal(endpoints.length, 1);

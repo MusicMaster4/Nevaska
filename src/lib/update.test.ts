@@ -71,6 +71,21 @@ describe("what the app accepts as an update", () => {
 });
 
 describe("installing", () => {
+  test("failed downloads do not restart the application and can be retried", async () => {
+    const fake = io("1.0.0", { version: "1.0.1" });
+    let attempts = 0;
+    fake.check = async () => ({
+      version: "1.0.1",
+      downloadAndInstall: async () => {
+        if (++attempts === 1) throw new Error("Network unavailable");
+      },
+    });
+    const update = await checkForUpdateWith(fake);
+    await assert.rejects(update!.install(), /Network unavailable/);
+    assert.equal(fake.relaunched, 0);
+    await update!.install();
+    assert.equal(fake.relaunched, 1);
+  });
   test("reports progress and hands over to the installer", async () => {
     const fake = io("1.0.0", { version: "1.0.1" });
     const update = await checkForUpdateWith(fake);

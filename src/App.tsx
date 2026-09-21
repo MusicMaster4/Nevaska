@@ -99,6 +99,7 @@ export default function App() {
   const [updateMsg, setUpdateMsg] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const updateOperation = useRef(false);
   const [engineError, setEngineError] = useState("");
   const [showEngineArrows, setShowEngineArrows] = useState(false);
   const [arrowsHidden, setArrowsHidden] = useState(false);
@@ -244,30 +245,43 @@ export default function App() {
   }
 
   async function doCheck() {
+    if (updateOperation.current) return;
+    updateOperation.current = true;
     setBusy(true);
-    setUpdateMsg("");
+    setProgress(null);
+    setUpdateMsg("Checking for updates…");
     setUpdate(null);
     try {
       const found = await checkForUpdate();
-      if (!found) setUpdateMsg("Up to date");
+      if (!found) setUpdateMsg("You are up to date on this channel.");
       else {
         setUpdate(found);
         setUpdateMsg(found.version);
       }
     } catch (err) {
-      setUpdateMsg(err instanceof Error ? err.message : "Check failed");
+      setUpdateMsg(err instanceof Error ? err.message : typeof err === "string" ? err : "Check failed");
     } finally {
+      updateOperation.current = false;
       setBusy(false);
     }
   }
 
   async function doInstall() {
-    if (!update) return;
+    if (!update || updateOperation.current) return;
+    updateOperation.current = true;
     setBusy(true);
+    setProgress(null);
+    setUpdateMsg("Downloading update… The app will restart after installation.");
     try {
-      await update.install(setProgress);
+      await update.install((fraction) => {
+        setProgress(fraction);
+        if (fraction === 1) setUpdateMsg("Installing update… The app will restart.");
+      });
     } catch (err) {
-      setUpdateMsg(err instanceof Error ? err.message : "Install failed");
+      setUpdateMsg(err instanceof Error ? err.message : typeof err === "string" ? err : "Install failed");
+      setProgress(null);
+    } finally {
+      updateOperation.current = false;
       setBusy(false);
     }
   }
@@ -548,12 +562,13 @@ export default function App() {
             {channel ? `${channel.version} · ${channelLabel(channel.version)}` : "…"}
           </div>
           <div className="row">
-            <button className="solid" disabled={busy} onClick={doCheck}>Check</button>
+            <button className="solid" disabled={busy} onClick={doCheck}>Check for updates</button>
             {update && (
-              <button className="ghost" disabled={busy} onClick={doInstall}>Install</button>
+              <button className="ghost" disabled={busy} onClick={doInstall}>Download and install</button>
             )}
           </div>
-          {updateMsg && <div className="update-status">{updateMsg}</div>}
+          {update?.notes && <p>{update.notes}</p>}
+          {updateMsg && <div className="update-status" role="status">{updateMsg}</div>}
           {progress != null && (
             <div className="progress"><span style={{ width: `${Math.round(progress * 100)}%` }} /></div>
           )}

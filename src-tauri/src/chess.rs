@@ -146,6 +146,10 @@ impl Game {
         fen_string(&self.pos)
     }
 
+    pub fn start_fen(&self) -> &str {
+        &self.start_fen
+    }
+
     pub fn side_to_move(&self) -> Side {
         self.pos.turn().into()
     }

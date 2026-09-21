@@ -1,6 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, FlipVertical2, Undo2, Play, Cpu, FileText, RefreshCw, ChartNoAxesCombined, X, type LucideIcon } from "lucide-react";
 import { Board } from "./Board";
 import {
   addArrow,
@@ -32,7 +34,7 @@ import type {
 import { EMPTY_GAME } from "./lib/types";
 import { checkForUpdate, channelLabel, type AvailableUpdate } from "./lib/update";
 
-type Panel = "none" | "engines" | "game" | "updates" | "pgn";
+type Panel = "none" | "engines" | "game" | "updates" | "pgn" | "analysis";
 
 const TIMES = [
   { label: "1+0", initial: 60_000, inc: 0 },
@@ -42,12 +44,10 @@ const TIMES = [
   { label: "15+10", initial: 900_000, inc: 10_000 },
 ];
 
-function Icon({ d, title }: { d: string; title: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-label={title}>
-      <path d={d} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
+function Icon({ title }: { title: string }) {
+  const icons: Record<string, LucideIcon> = { New: Plus, Flip: FlipVertical2, Undo: Undo2, Play, Engines: Cpu, PGN: FileText, Updates: RefreshCw };
+  const Symbol = icons[title];
+  return <Symbol aria-label={title} strokeWidth={1.8} />;
 }
 
 function formatClock(ms: number) {
@@ -99,16 +99,54 @@ export default function App() {
   const [updateMsg, setUpdateMsg] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [engineError, setEngineError] = useState("");
+  const [showEngineArrows, setShowEngineArrows] = useState(false);
+  const [arrowsHidden, setArrowsHidden] = useState(false);
+  const fenRef = useRef(game.fen);
+  fenRef.current = game.fen;
+  const arrowRevision = useRef(0);
 
   useEffect(() => {
+    setLines((prev) => prev.filter((line) => line.fen === game.fen));
+    setArrows([]);
+    setArrowsHidden(false);
+  }, [game.fen]);
+
+  useEffect(() => {
+    const clear = (event: MouseEvent) => {
+      if (event.button === 2) return;
+      arrowRevision.current++;
+      setArrows([]);
+      setArrowsHidden(true);
+      void clearArrows().catch(() => {});
+    };
+    window.addEventListener("pointerdown", clear, true);
+    // Also handle an additional button pressed while another button is held.
+    window.addEventListener("mousedown", clear, true);
+    return () => { window.removeEventListener("mousedown", clear, true); window.removeEventListener("pointerdown", clear, true); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
     gameState().then(setGame).catch(() => setGame(EMPTY_GAME));
-    listEngines().then(setEngines).catch(() => {});
+    listEngines().then(async (installed) => {
+      if (disposed) return;
+      setEngines(installed);
+      const defaultEngine = installed.find((engine) => engine.kind === "stockfish") ?? installed[0];
+      if (defaultEngine) {
+        setAnalysisEngine(defaultEngine.id);
+        await configurePlay({ mode: "human_human", white_engine: null, black_engine: null, analysis_engine: defaultEngine.id, initial_ms: 600_000, increment_ms: 0, infinite: false });
+      }
+    }).catch((err) => { if (isTauri()) setEngineError(String(err)); });
     listArrows().then(setArrows).catch(() => {});
     channelInfo().then(setChannel).catch(() => {});
     const unsubs: Array<() => void> = [];
-    listen<GameState>("game-state", (e) => setGame(e.payload)).then((u) => unsubs.push(u)).catch(() => {});
+    const subscribe = (u: () => void) => { if (disposed) u(); else unsubs.push(u); };
+    listen<GameState>("game-state", (e) => { fenRef.current = e.payload.fen; setGame(e.payload); }).then(subscribe).catch(() => {});
     listen<InfoLine>("engine-info", (e) => {
       const info = e.payload;
+      if (info.fen !== fenRef.current || !info.pv.length) return;
+      setEngineError("");
       setLines((prev) => {
         const key = info.multipv ?? 1;
         const next = prev.filter((l) => (l.multipv ?? 1) !== key);
@@ -116,8 +154,9 @@ export default function App() {
         next.sort((a, b) => (a.multipv ?? 1) - (b.multipv ?? 1));
         return next.slice(0, 4);
       });
-    }).then((u) => unsubs.push(u)).catch(() => {});
-    return () => unsubs.forEach((u) => u());
+    }).then(subscribe).catch(() => {});
+    listen<string>("engine-error", (e) => setEngineError(e.payload)).then(subscribe).catch(() => {});
+    return () => { disposed = true; unsubs.forEach((u) => u()); };
   }, []);
 
   useEffect(() => {
@@ -133,17 +172,18 @@ export default function App() {
   const botClock = flipped ? blackMs : whiteMs;
   const topActive = flipped ? game.turn === "white" : game.turn === "black";
 
-  const best = lines[0];
+  const currentLines = lines.filter((line) => line.fen === game.fen);
+  const best = currentLines[0];
   const engineArrows: BoardArrow[] = useMemo(() => {
-    return lines.flatMap((line, i) => {
+    return lines.filter((line) => line.fen === game.fen).flatMap((line, i) => {
       const mv = line.pv[0];
       if (!mv || mv.length < 4) return [];
       const colors = ["#9EC9D9", "#6FA3B5", "#C5D4DC"];
       return [{ from: mv.slice(0, 2), to: mv.slice(2, 4), color: colors[i % 3], source: "engine" }];
     });
-  }, [lines]);
+  }, [lines, game.fen]);
 
-  const shownArrows = [...arrows.filter((a) => a.source === "user"), ...engineArrows];
+  const shownArrows = [...arrows.filter((a) => a.source === "user"), ...(showEngineArrows && !arrowsHidden ? engineArrows : [])];
 
   async function refresh() {
     try {
@@ -165,10 +205,12 @@ export default function App() {
   }
 
   async function onArrow(from: string, to: string) {
+    const revision = arrowRevision.current;
     try {
-      setArrows(await addArrow(from, to, "#9EC9D9"));
+      const next = await addArrow(from, to, "#9EC9D9");
+      if (revision === arrowRevision.current) setArrows(next);
     } catch {
-      setArrows((a) => [...a, { from, to, color: "#9EC9D9", source: "user" }]);
+      if (revision === arrowRevision.current) setArrows((a) => [...a, { from, to, color: "#9EC9D9", source: "user" }]);
     }
   }
 
@@ -242,7 +284,7 @@ export default function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app ${panel !== "none" ? "panel-open" : ""}`}>
       <div className="snow" aria-hidden>
         {flakes.map((f, i) => (
           <span
@@ -253,36 +295,40 @@ export default function App() {
         ))}
       </div>
       <header className="topbar">
-        <div className="wordmark">Nevaska</div>
+        <div className="wordmark"><img src="/icon.png" alt="" />Nevaska</div>
         <div className="icon-row">
           <button className="icon-btn" title="New" onClick={async () => { setLines([]); setGame(await newGame().catch(() => EMPTY_GAME)); setWhiteMs(time.initial); setBlackMs(time.initial); }}>
-            <Icon title="New" d="M5 12h14M12 5v14" />
+            <Icon title="New" />
           </button>
           <button className="icon-btn" title="Flip" onClick={() => setFlipped((v) => !v)}>
-            <Icon title="Flip" d="M7 7h10v4H7zM7 13h10v4H7zM4 12h16" />
+            <Icon title="Flip" />
           </button>
           <button className="icon-btn" title="Undo" onClick={async () => { try { setGame(await undoMove()); } catch { /* */ } }}>
-            <Icon title="Undo" d="M9 7H5v4M5 11c2.5-4 11-6 14 2" />
+            <Icon title="Undo" />
           </button>
           <button className={`icon-btn ${panel === "game" ? "active" : ""}`} title="Play" onClick={() => setPanel(panel === "game" ? "none" : "game")}>
-            <Icon title="Play" d="M8 6v12l10-6z" />
+            <Icon title="Play" />
           </button>
           <button className={`icon-btn ${panel === "engines" ? "active" : ""}`} title="Engines" onClick={() => setPanel(panel === "engines" ? "none" : "engines")}>
-            <Icon title="Engines" d="M12 8v8M8 12h8M7 4h10l2 4H5zM7 20h10l2-4H5z" />
+            <Icon title="Engines" />
+          </button>
+          <button className={`icon-btn ${panel === "analysis" ? "active" : ""}`} title="Análise ao vivo" aria-label="Análise ao vivo" aria-expanded={panel === "analysis"} onClick={() => setPanel(panel === "analysis" ? "none" : "analysis")}>
+            <ChartNoAxesCombined strokeWidth={1.8} />
           </button>
           <button className={`icon-btn ${panel === "pgn" ? "active" : ""}`} title="PGN" onClick={async () => { setPanel(panel === "pgn" ? "none" : "pgn"); try { setPgn(await exportPgn()); setFen(game.fen); } catch { /* */ } }}>
-            <Icon title="PGN" d="M7 4h10v16H7zM10 8h4M10 12h4M10 16h3" />
+            <Icon title="PGN" />
           </button>
           <button className={`icon-btn ${panel === "updates" ? "active" : ""}`} title="Updates" onClick={() => setPanel(panel === "updates" ? "none" : "updates")}>
-            <Icon title="Updates" d="M12 5v6l4 2M20 12a8 8 0 1 1-2.2-5.5" />
+            <Icon title="Updates" />
           </button>
         </div>
       </header>
       <main className="stage">
         <section className="board-col">
           <div className="board-frame">
-            <div className="eval-bar" title={best ? scoreText(best) : undefined}>
+            <div className={`eval-bar ${flipped ? "flipped" : ""}`} aria-label={`Avaliação das brancas: ${best ? scoreText(best) : "aguardando engine"}`} title={best ? `Brancas: ${scoreText(best)}` : "Aguardando análise"}>
               <div className="eval-fill" style={{ height: `${evalHeight(best)}%` }} />
+              <span className="eval-score">{best ? scoreText(best) : "—"}</span>
             </div>
             <Board game={game} flipped={flipped} arrows={shownArrows} onPlay={onPlay} onArrow={onArrow} />
           </div>
@@ -298,21 +344,53 @@ export default function App() {
               </span>
             ))}
           </div>
-          <div className="lines">
-            {lines.map((line, i) => (
-              <div className="line" key={i}>
-                <span className="score">{scoreText(line)}</span>
-                <span className="depth">{line.depth ?? ""}</span>
-                <span className="pv">{(line.pv_san.length ? line.pv_san : line.pv).join(" ")}</span>
-              </div>
-            ))}
-          </div>
+          <button className="analysis-summary" onClick={() => setPanel("analysis")}>
+            <ChartNoAxesCombined size={20} /><span>Análise ao vivo<small>{best ? `${scoreText(best)} · profundidade ${best.depth ?? "—"}` : "Abrir estatísticas do engine"}</small></span>
+          </button>
           <div>
             {resultText(game) && <div className="over">{resultText(game)}</div>}
             <div className={`clock ${topActive ? "dim" : ""}`}>{formatClock(botClock)}</div>
           </div>
         </aside>
       </main>
+
+      {panel !== "none" && <button className="close-panel icon-btn" title="Fechar painel" aria-label="Fechar painel" onClick={() => setPanel("none")}><X /></button>}
+      {panel === "analysis" && (
+        <section className="panel analysis-panel" aria-label="Análise ao vivo">
+          <h2>Análise</h2>
+          <div className="field">
+            <label htmlFor="analysis-engine">Engine de avaliação</label>
+            <select id="analysis-engine" value={analysisEngine ?? ""} onChange={async (e) => {
+              const id = e.target.value || null;
+              setAnalysisEngine(id); setLines([]); setEngineError("");
+              try { await configurePlay({ mode, white_engine: whiteEngine, black_engine: blackEngine, analysis_engine: id, initial_ms: time.initial, increment_ms: time.inc, infinite: false }); } catch (err) { setEngineError(String(err)); }
+            }}>
+              <option value="">Selecione um engine</option>
+              {engines.map((engine) => <option key={engine.id} value={engine.id}>{engine.name}</option>)}
+            </select>
+          </div>
+          {engineError && <p className="engine-error" role="alert">{engineError}</p>}
+          {!engines.length && <div className="empty-analysis">Adicione um engine para acompanhar a avaliação e os melhores lances.<button className="ghost" onClick={() => setPanel("engines")}>Adicionar engine</button></div>}
+          <div className="position-verdict"><strong>{best ? scoreText(best) : "—"}</strong><span>{best?.score_mate != null ? `Mate a favor das ${best.score_mate >= 0 ? "brancas" : "pretas"}` : best?.score_cp != null ? Math.abs(best.score_cp) < 30 ? "Posição equilibrada" : `Vantagem das ${best.score_cp > 0 ? "brancas" : "pretas"}` : "Aguardando avaliação"}<small>Avaliação pela perspectiva das brancas</small></span></div>
+          {best?.wdl && <div className="wdl"><div className="wdl-bar">{best.wdl.map((value, i) => <span key={i} style={{ flex: value }} />)}</div><div className="wdl-labels"><span>Brancas {best.wdl[0] / 10}%</span><span>Empate {best.wdl[1] / 10}%</span><span>Pretas {best.wdl[2] / 10}%</span></div></div>}
+          <dl className="analysis-stats">
+            {[
+              ["Profundidade", best?.depth != null ? `${best.depth} meios-lances` : "—"],
+              ["Linha mais profunda", best?.seldepth != null ? `${best.seldepth} meios-lances` : "—"],
+              ["Posições analisadas", best?.nodes?.toLocaleString("pt-BR") ?? "—"],
+              ["Posições / segundo", best?.nps?.toLocaleString("pt-BR") ?? "—"],
+              ["Tempo de busca", best?.time_ms != null ? `${(best.time_ms / 1000).toFixed(1)} s` : "—"],
+              ["Cache ocupado", best?.hashfull != null ? `${best.hashfull / 10}%` : "—"],
+              ["Consultas a finais", best?.tbhits?.toLocaleString("pt-BR") ?? "—"],
+              ["Lances legais", game.legal.length.toString()],
+            ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+          </dl>
+          <p className="analysis-note">Um meio-lance é uma jogada de um dos lados. Profundidade não significa previsão garantida.</p>
+          <div className="analysis-heading"><h3>Melhores continuações</h3><label><input type="checkbox" checked={showEngineArrows} onChange={(e) => { setShowEngineArrows(e.target.checked); setArrowsHidden(false); }} /> Setas</label></div>
+          <div className="variations">{currentLines.map((line, i) => <article key={line.multipv ?? i}><header><span>#{line.multipv ?? i + 1} · {line.pv_san[0] ?? line.pv[0]}</span><strong>{scoreText(line)}</strong></header><p>{(line.pv_san.length ? line.pv_san : line.pv).join(" ")}</p><small>Profundidade {line.depth ?? "—"}</small></article>)}</div>
+          <div className="position-details"><span>{game.turn === "white" ? "Brancas" : "Pretas"} jogam{game.in_check ? " · Xeque" : ""}</span><label htmlFor="position-fen">Posição FEN</label><textarea id="position-fen" readOnly value={game.fen} /></div>
+        </section>
+      )}
 
       {panel === "engines" && (
         <div className="panel">
@@ -345,6 +423,10 @@ export default function App() {
                 <span className="kind">{engine.threads} cores</span>
                 <span className="kind">{engine.hash_mb} MB</span>
                 <span className="kind">pv {engine.multipv}</span>
+                <label className="kind">Variantes <select aria-label={`Variantes ${engine.name}`} value={engine.multipv} onChange={async (e) => {
+                  setLines([]);
+                  setEngines(await updateEngine({ ...engine, multipv: Number(e.target.value) }));
+                }}>{[1, 2, 3, 4].map((n) => <option value={n} key={n}>{n}</option>)}</select></label>
                 <label className="kind">
                   <input
                     type="checkbox"

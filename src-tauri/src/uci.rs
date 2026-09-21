@@ -74,6 +74,11 @@ pub struct GoLimits {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct InfoLine {
+    pub fen: Option<String>,
+    pub engine_id: Option<String>,
+    pub hashfull: Option<u32>,
+    pub tbhits: Option<u64>,
+    pub wdl: Option<[u32; 3]>,
     pub depth: Option<u32>,
     pub seldepth: Option<u32>,
     pub multipv: Option<u32>,
@@ -110,6 +115,9 @@ impl UciSession {
     pub fn spawn(path: impl AsRef<Path>) -> Result<Self, UciError> {
         let path = path.as_ref();
         let mut cmd = Command::new(path);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            cmd.current_dir(parent);
+        }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -225,6 +233,8 @@ impl UciSession {
             let line = self.read_line()?;
             if let Some(info) = parse_info_line(&line) {
                 on_info(info.clone());
+                // Retain only the latest line per variation during infinite analysis.
+                infos.retain(|old: &InfoLine| old.multipv != info.multipv);
                 infos.push(info);
             }
             if let Some((bestmove, ponder)) = parse_bestmove(&line) {
@@ -397,8 +407,14 @@ pub fn parse_info_line(line: &str) -> Option<InfoLine> {
                 info.string = Some(tokens[i + 1..].join(" "));
                 break;
             }
-            "hashfull" | "tbhits" | "sbhits" | "cpuload" | "currmovenumber" | "currmove"
-            | "refutation" | "currline" | "wdl" => {
+            "hashfull" => { info.hashfull = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
+            "tbhits" => { info.tbhits = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
+            "wdl" => {
+                info.wdl = tokens.get(i+1..i+4).and_then(|v| Some([v[0].parse().ok()?, v[1].parse().ok()?, v[2].parse().ok()?]));
+                i += 4;
+            }
+            "sbhits" | "cpuload" | "currmovenumber" | "currmove"
+            | "refutation" | "currline" => {
                 i += 2;
             }
             _ => i += 1,
@@ -491,6 +507,7 @@ pub fn apply_engine_config(
         Ok::<(), UciError>(())
     };
     set("Threads", threads.to_string(), session, &mut sent)?;
+    set("UCI_ShowWDL", "true".into(), session, &mut sent)?;
     if let Some(hash) = hash_mb {
         set("Hash", hash.to_string(), session, &mut sent)?;
     }

@@ -13,6 +13,7 @@ fn main() {
     let mut hash = "16".to_string();
     let mut multipv = "1".to_string();
     let mut moves: Vec<String> = Vec::new();
+    let mut position = nevaska_lib::chess::Game::startpos();
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -50,10 +51,14 @@ fn main() {
             }
         } else if let Some(rest) = line.strip_prefix("position ") {
             moves.clear();
+            position = if let Some(fen) = rest.strip_prefix("fen ") {
+                nevaska_lib::chess::Game::from_fen(fen.split(" moves ").next().unwrap()).unwrap()
+            } else { nevaska_lib::chess::Game::startpos() };
             if let Some(idx) = rest.find(" moves ") {
                 let mv = rest[idx + " moves ".len()..].trim();
                 if !mv.is_empty() {
                     moves = mv.split_whitespace().map(|s| s.to_string()).collect();
+                    for mv in &moves { position.play(mv).unwrap(); }
                 }
             }
         } else if line.starts_with("go") {
@@ -62,8 +67,10 @@ fn main() {
                 "info string set Threads={threads} Hash={hash} EvalFile={eval_file} WeightsFile={weights_file} UCI_LimitStrength={limit_strength} UCI_Elo={elo} MultiPV={multipv} go={line}"
             )
             .unwrap();
-            let reply = reply_move(&moves);
-            let ponder = ponder_move(&reply);
+            let legal = position.legal_moves();
+            let preferred = if matches!(position.side_to_move(), nevaska_lib::chess::Side::White) { "e2e4" } else { "e7e5" };
+            let reply = legal.iter().find(|m| m.as_str() == preferred).or(legal.first()).map(String::as_str).unwrap_or("0000");
+            let ponder = ponder_move(reply);
             writeln!(
                 stdout,
                 "info depth 8 seldepth 12 multipv 1 score cp 32 nodes 1234 nps 10000 time 12 pv {reply} {ponder}"

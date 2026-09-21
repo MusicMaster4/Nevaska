@@ -15,6 +15,7 @@ use play::{analysis_limits, engine_search, PlayMode, TimeControl};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uci::{GoLimits, GoResult, InfoLine, UciSession};
 
@@ -32,6 +33,8 @@ struct Inner {
 }
 
 struct AppState {
+    operation: Mutex<()>,
+    generation: AtomicU64,
     inner: Mutex<Inner>,
     sessions: Mutex<HashMap<String, Arc<UciSession>>>,
     data_dir: Mutex<Option<std::path::PathBuf>>,
@@ -40,6 +43,8 @@ struct AppState {
 impl AppState {
     fn new() -> Self {
         Self {
+            operation: Mutex::new(()),
+            generation: AtomicU64::new(0),
             inner: Mutex::new(Inner {
                 game: Game::startpos(),
                 engines: Vec::new(),
@@ -68,54 +73,84 @@ fn game_state(state: State<AppState>) -> GameState {
 }
 
 #[tauri::command]
-fn new_game(state: State<AppState>) -> GameState {
+fn new_game(app: AppHandle, state: State<AppState>) -> GameState {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
     inner.game = Game::startpos();
     inner.arrows.clear();
     inner.white_ms = inner.time.initial_ms;
     inner.black_ms = inner.time.initial_ms;
-    inner.game.state()
+    let snapshot = inner.game.state();
+    drop(inner);
+    resume_searches(&app, &state);
+    snapshot
 }
 
 #[tauri::command]
 fn play_move(app: AppHandle, state: State<AppState>, uci: String) -> Result<GameState, String> {
+    let _operation = state.operation.lock().expect("operation");
+    if !state.inner.lock().expect("state").game.is_legal(&uci) { return Err("Illegal move".into()); }
+    cancel_searches(&state);
     {
         let mut inner = state.inner.lock().expect("state");
         inner.game.play(&uci).map_err(map_chess)?;
         inner.arrows.retain(|a| a.source != "engine");
     }
-    maybe_kick_engine(&app, &state);
+    resume_searches(&app, &state);
     Ok(state.inner.lock().expect("state").game.state())
 }
 
 #[tauri::command]
-fn undo_move(state: State<AppState>) -> Result<GameState, String> {
+fn undo_move(app: AppHandle, state: State<AppState>) -> Result<GameState, String> {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
     inner.game.undo().map_err(map_chess)?;
-    Ok(inner.game.state())
+    let snapshot = inner.game.state();
+    drop(inner);
+    resume_searches(&app, &state);
+    Ok(snapshot)
 }
 
 #[tauri::command]
-fn goto_ply(state: State<AppState>, ply: usize) -> Result<GameState, String> {
+fn goto_ply(app: AppHandle, state: State<AppState>, ply: usize) -> Result<GameState, String> {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
     inner.game.goto_ply(ply).map_err(map_chess)?;
-    Ok(inner.game.state())
+    let snapshot = inner.game.state();
+    drop(inner);
+    resume_searches(&app, &state);
+    Ok(snapshot)
 }
 
 #[tauri::command]
-fn load_fen(state: State<AppState>, fen: String) -> Result<GameState, String> {
+fn load_fen(app: AppHandle, state: State<AppState>, fen: String) -> Result<GameState, String> {
+    let _operation = state.operation.lock().expect("operation");
+    let game = Game::from_fen(&fen).map_err(map_chess)?;
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
-    inner.game = Game::from_fen(&fen).map_err(map_chess)?;
+    inner.game = game;
     inner.arrows.clear();
-    Ok(inner.game.state())
+    let snapshot = inner.game.state();
+    drop(inner);
+    resume_searches(&app, &state);
+    Ok(snapshot)
 }
 
 #[tauri::command]
-fn load_pgn(state: State<AppState>, pgn: String) -> Result<GameState, String> {
+fn load_pgn(app: AppHandle, state: State<AppState>, pgn: String) -> Result<GameState, String> {
+    let _operation = state.operation.lock().expect("operation");
+    let game = Game::from_pgn(&pgn).map_err(map_chess)?;
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
-    inner.game = Game::from_pgn(&pgn).map_err(map_chess)?;
+    inner.game = game;
     inner.arrows.clear();
-    Ok(inner.game.state())
+    let snapshot = inner.game.state();
+    drop(inner);
+    resume_searches(&app, &state);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -146,7 +181,9 @@ fn add_engine(state: State<AppState>, path: String) -> Result<EngineConfig, Stri
 }
 
 #[tauri::command]
-fn update_engine(state: State<AppState>, config: EngineConfig) -> Result<Vec<EngineConfig>, String> {
+fn update_engine(app: AppHandle, state: State<AppState>, config: EngineConfig) -> Result<Vec<EngineConfig>, String> {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
     if let Some(existing) = inner.engines.iter_mut().find(|e| e.id == config.id) {
         *existing = config;
@@ -154,21 +191,26 @@ fn update_engine(state: State<AppState>, config: EngineConfig) -> Result<Vec<Eng
         return Err("engine not found".into());
     }
     persist_engines(&state, &inner.engines)?;
-    Ok(inner.engines.clone())
+    let engines = inner.engines.clone();
+    drop(inner);
+    resume_searches(&app, &state);
+    Ok(engines)
 }
 
 #[tauri::command]
-fn remove_engine(state: State<AppState>, id: String) -> Result<Vec<EngineConfig>, String> {
-    {
-        let mut sessions = state.sessions.lock().expect("sessions");
-        if let Some(session) = sessions.remove(&id) {
-            let _ = session.quit();
-        }
-    }
+fn remove_engine(app: AppHandle, state: State<AppState>, id: String) -> Result<Vec<EngineConfig>, String> {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
     let mut inner = state.inner.lock().expect("state");
     inner.engines.retain(|e| e.id != id);
+    if inner.analysis_engine.as_ref() == Some(&id) { inner.analysis_engine = None; }
+    if inner.white_engine.as_ref() == Some(&id) { inner.white_engine = None; }
+    if inner.black_engine.as_ref() == Some(&id) { inner.black_engine = None; }
     persist_engines(&state, &inner.engines)?;
-    Ok(inner.engines.clone())
+    let engines = inner.engines.clone();
+    drop(inner);
+    resume_searches(&app, &state);
+    Ok(engines)
 }
 
 #[tauri::command]
@@ -190,6 +232,8 @@ struct PlaySetup {
 
 #[tauri::command]
 fn configure_play(app: AppHandle, state: State<AppState>, setup: PlaySetup) -> Result<GameState, String> {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
     {
         let mut inner = state.inner.lock().expect("state");
         inner.mode = setup.mode;
@@ -204,21 +248,30 @@ fn configure_play(app: AppHandle, state: State<AppState>, setup: PlaySetup) -> R
         inner.white_ms = setup.initial_ms;
         inner.black_ms = setup.initial_ms;
     }
-    if matches!(setup.mode, PlayMode::Analysis) {
-        kick_analysis(&app, &state);
-    } else {
-        maybe_kick_engine(&app, &state);
-    }
+    resume_searches(&app, &state);
     Ok(state.inner.lock().expect("state").game.state())
 }
 
 #[tauri::command]
-fn stop_search(state: State<AppState>) -> Result<(), String> {
-    let sessions = state.sessions.lock().expect("sessions");
-    for session in sessions.values() {
-        let _ = session.stop();
-    }
+fn stop_search(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let _operation = state.operation.lock().expect("operation");
+    cancel_searches(&state);
+    state.inner.lock().expect("state").mode = PlayMode::HumanHuman;
+    kick_analysis(&app, &state);
     Ok(())
+}
+
+fn cancel_searches(state: &AppState) {
+    state.generation.fetch_add(1, Ordering::SeqCst);
+    for (_, session) in state.sessions.lock().expect("sessions").drain() {
+        let _ = session.quit();
+    }
+}
+
+fn resume_searches(app: &AppHandle, state: &AppState) {
+    maybe_kick_engine(app, state);
+    // A separate process keeps live evaluation available in every play mode.
+    kick_analysis(app, state);
 }
 
 #[tauri::command]
@@ -310,10 +363,11 @@ fn persist_engines(state: &State<AppState>, engines: &[EngineConfig]) -> Result<
     Ok(())
 }
 
-fn ensure_session(state: &AppState, engine_id: &str) -> Result<Arc<UciSession>, String> {
+fn ensure_session(state: &AppState, engine_id: &str, analysis: bool) -> Result<Arc<UciSession>, String> {
+    let key = format!("{engine_id}:{analysis}");
     {
         let sessions = state.sessions.lock().expect("sessions");
-        if let Some(existing) = sessions.get(engine_id) {
+        if let Some(existing) = sessions.get(&key) {
             return Ok(Arc::clone(existing));
         }
     }
@@ -335,7 +389,7 @@ fn ensure_session(state: &AppState, engine_id: &str) -> Result<Arc<UciSession>, 
         .sessions
         .lock()
         .expect("sessions")
-        .insert(engine_id.to_string(), Arc::clone(&session));
+        .insert(key, Arc::clone(&session));
     Ok(session)
 }
 
@@ -375,8 +429,10 @@ fn kick_analysis(app: &AppHandle, state: &AppState) {
 }
 
 fn kick_search(app: &AppHandle, state: &AppState, engine_id: &str, analysis: bool) {
-    let Ok(session) = ensure_session(state, engine_id) else {
-        return;
+    let generation = state.generation.load(Ordering::SeqCst);
+    let session = match ensure_session(state, engine_id, analysis) {
+        Ok(session) => session,
+        Err(err) => { let _ = app.emit("engine-error", err); return; }
     };
     let (game, limits) = {
         let inner = state.inner.lock().expect("state");
@@ -392,15 +448,29 @@ fn kick_search(app: &AppHandle, state: &AppState, engine_id: &str, analysis: boo
     std::thread::spawn(move || {
         let _ = handle.emit("engine-thinking", engine_id.clone());
         let result = engine_search(&session, &game, &limits, |mut info| {
+            let state = handle.state::<AppState>();
+            if state.generation.load(Ordering::SeqCst) != generation { return; }
+            if !analysis && state.inner.lock().expect("state").analysis_engine.is_some() { return; }
+            info.fen = Some(game.fen());
+            info.engine_id = Some(engine_id.clone());
+            if matches!(game.side_to_move(), chess::Side::Black) {
+                info.score_cp = info.score_cp.map(|v| -v);
+                info.score_mate = info.score_mate.map(|v| -v);
+                info.wdl = info.wdl.map(|v| [v[2], v[1], v[0]]);
+            }
             info.pv_san = game.pv_san(&info.pv);
             let _ = handle.emit("engine-info", info);
         });
+        let app_state = handle.state::<AppState>();
+        let _operation = app_state.operation.lock().expect("operation");
+        if app_state.generation.load(Ordering::SeqCst) != generation { return; }
         match result {
             Ok(go) => {
                 let _ = handle.emit("engine-bestmove", go.clone());
                 if !analysis {
                     if let Some(state) = handle.try_state::<AppState>() {
                         let mut inner = state.inner.lock().expect("state");
+                        if state.generation.load(Ordering::SeqCst) != generation || inner.game.fen() != game.fen() { return; }
                         if !inner.game.result().is_over() {
                             if inner.game.play(&go.bestmove).is_ok() {
                                 inner.arrows.retain(|a| a.source != "engine");
@@ -420,7 +490,8 @@ fn kick_search(app: &AppHandle, state: &AppState, engine_id: &str, analysis: boo
                         let snapshot = inner.game.state();
                         drop(inner);
                         let _ = handle.emit("game-state", snapshot);
-                        maybe_kick_engine(&handle, &state);
+                        cancel_searches(&state);
+                        resume_searches(&handle, &state);
                     }
                 }
             }

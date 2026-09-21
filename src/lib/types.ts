@@ -62,6 +62,11 @@ export interface PlaySetup {
 }
 
 export interface InfoLine {
+  fen: string | null;
+  engine_id: string | null;
+  hashfull: number | null;
+  tbhits: number | null;
+  wdl: [number, number, number] | null;
   depth: number | null;
   seldepth: number | null;
   multipv: number | null;

@@ -149,3 +149,21 @@ fn arrow_from_move_and_from_squares() {
     assert!((flipped.x1 - (3.5 * sq)).abs() < 0.001);
     assert!(flipped.y1 < flipped.y2);
 }
+
+#[test]
+fn parses_live_statistics_and_wdl() {
+    let info = nevaska_lib::uci::parse_info_line("info depth 24 seldepth 38 multipv 2 score cp -40 wdl 100 600 300 nodes 90000 nps 30000 time 3000 hashfull 123 tbhits 9 pv e7e5").unwrap();
+    assert_eq!(info.wdl, Some([100, 600, 300]));
+    assert_eq!(info.hashfull, Some(123));
+    assert_eq!(info.tbhits, Some(9));
+    assert_eq!(info.pv, vec!["e7e5"]);
+    assert_eq!(info.score_cp, Some(-40));
+}
+
+#[test]
+fn searches_loaded_fen_instead_of_start_position() {
+    let game = Game::from_fen("7k/8/8/8/8/8/6R1/7K b - - 0 1").unwrap();
+    let engine = live_engine();
+    let result = nevaska_lib::play::engine_search(&engine, &game, &GoLimits { depth: Some(1), ..GoLimits::default() }, |_| {}).unwrap();
+    assert!(game.legal_moves().contains(&result.bestmove));
+}

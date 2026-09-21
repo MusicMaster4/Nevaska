@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { ChessPiece } from "./pieces";
 import type { BoardArrow, GameState } from "./lib/types";
 
@@ -36,6 +36,7 @@ export function Board({
   const [drag, setDrag] = useState<{ square: string; x: number; y: number } | null>(null);
   const [ghost, setGhost] = useState<{ from: string; to: string } | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  useEffect(() => { setSelected(null); setPromo(null); setDrag(null); setGhost(null); }, [game.fen, flipped]);
 
   const pieces = useMemo(() => {
     const map = new Map<string, string>();
@@ -95,20 +96,22 @@ export function Board({
 
   function onPointerDown(e: PointerEvent, square: string) {
     if (e.button === 2) {
+      e.preventDefault();
       setGhost({ from: square, to: square });
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
     if (e.button !== 0) return;
     if (promo) return;
-    if (selected) {
+    e.preventDefault();
+    if (selected && selected !== square && dests.has(square)) {
       tryMove(selected, square);
       return;
     }
-    if (!pieces.has(square)) return;
+    if (!game.legal.some((m) => m.startsWith(square))) { setSelected(null); return; }
     setSelected(square);
     setDrag({ square, x: e.clientX, y: e.clientY });
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.currentTarget.setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -175,6 +178,8 @@ export function Board({
       onContextMenu={(e) => e.preventDefault()}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={() => { setDrag(null); setGhost(null); }}
+      onLostPointerCapture={() => { setDrag(null); setGhost(null); }}
     >
       <div className="board" id="chess-board" ref={root} data-piece-count={game.pieces.length}>
         {squares}
@@ -227,10 +232,11 @@ export function Board({
           className="piece"
           style={{
             position: "fixed",
+            inset: "auto",
             left: drag.x,
             top: drag.y,
-            width: 64,
-            height: 64,
+            width: (root.current?.clientWidth ?? 512) / 8,
+            height: (root.current?.clientHeight ?? 512) / 8,
             transform: "translate(-50%, -50%)",
             pointerEvents: "none",
             zIndex: 20,

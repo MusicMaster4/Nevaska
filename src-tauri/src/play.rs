@@ -64,7 +64,7 @@ pub fn engine_search(
     mut on_info: impl FnMut(InfoLine),
 ) -> Result<GoResult, UciError> {
     let moves: Vec<String> = game.moves().iter().map(|m| m.uci.clone()).collect();
-    session.position_startpos(&moves)?;
+    session.position_fen(game.start_fen(), &moves)?;
     session.go(limits, &mut on_info)
 }
 

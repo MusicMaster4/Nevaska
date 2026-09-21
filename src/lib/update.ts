@@ -88,7 +88,7 @@ const liveIo: UpdateIo = {
   },
   check: async () => {
     const { check } = await import("@tauri-apps/plugin-updater");
-    const update = await check();
+    const update = await check({ timeout: 30_000 });
     if (!update) return null;
     return {
       version: update.version,

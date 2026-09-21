@@ -52,9 +52,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwNTM4QUM3MkNGRTlDNTgKUldSWW5QNHN4NHBUWU5qaEwzeVZUelI3OXN2TWx4UmxhaTZwM0xOQnFxQ2FkeVRLT05HWG9WeDEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyQzgwOUMwNkVDMDkzMjUKUldRbGs4QnV3QW5JTW5Rb3RUbVhPVFFoTEVWTCtWeS83QTh4enJFamdKUm5RUjJaSDNlMlNHOXAK",
       "endpoints": [
-        "https://github.com/nevaska/nevaska/releases/latest/download/latest.json"
+        "https://github.com/MusicMaster4/Nevaska/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

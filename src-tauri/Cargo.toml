@@ -16,7 +16,16 @@ path = "src/main.rs"
 
 [[bin]]
 name = "stub_uci"
-path = "src/bin/stub_uci.rs"
+path = "tests/support/stub_uci.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "uci_session"
+path = "tests/uci_session.rs"
+required-features = ["test-support"]
+
+[features]
+test-support = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

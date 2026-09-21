@@ -326,7 +326,12 @@ fn channel_info(app: AppHandle) -> ChannelInfo {
         version: version.clone(),
         channel: channel.as_str().to_string(),
         label: channel.label().to_string(),
-        endpoint: endpoint_for(channel, repo),
+        endpoint: app.config().plugins.0.get("updater")
+            .and_then(|config| config.get("endpoints"))
+            .and_then(|endpoints| endpoints.get(0))
+            .and_then(|endpoint| endpoint.as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| endpoint_for(channel, repo)),
     }
 }
 
@@ -518,7 +523,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new()
+            .default_version_comparator(|current, candidate| {
+                channel::accept_update(&current.to_string(), &candidate.version.to_string())
+            })
+            .build())
         .manage(AppState::new())
         .setup(|app| {
             let state = app.state::<AppState>();

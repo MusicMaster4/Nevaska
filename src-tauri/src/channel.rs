@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const BETA_POINTER_TAG: &str = "channel-testing";
-pub const DEFAULT_REPO: &str = "nevaska/nevaska";
+pub const DEFAULT_REPO: &str = "MusicMaster4/Nevaska";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -62,6 +62,15 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Check updater signing configuration
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Configure TAURI_SIGNING_PRIVATE_KEY with the private key matching plugins.updater.pubkey before building releases. See docs/releases.md."
+            exit 1
+          fi
+
       - name: Resolve the next version
         id: calc
         env:
@@ -143,7 +152,7 @@ jobs:
 
       - name: Check the Linux Rust backend
         run: |
-          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support
           cargo check --locked --manifest-path src-tauri/Cargo.toml
 
   build:
@@ -392,7 +401,7 @@ jobs:
           test -n "$INSTALLER"
           mv "$INSTALLER" beta-channel/nevaska-beta-setup.exe
           if ! gh release view "$BETA_POINTER_TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release create "$BETA_POINTER_TAG" --repo "$REPO" --prerelease \
+            gh release create "$BETA_POINTER_TAG" --repo "$REPO" --prerelease --latest=false \
               --target "$GITHUB_SHA" --title "Beta channel manifest" \
               --notes "Permanent download and update pointer for the newest Nevaska beta."
           fi

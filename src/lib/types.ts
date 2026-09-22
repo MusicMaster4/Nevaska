@@ -47,6 +47,8 @@ export interface EngineConfig {
   limit_strength: boolean;
   elo: number;
   multipv: number;
+  /** Default EvalFile advertised by the engine. Null while unknown. */
+  nnue_name?: string | null;
 }
 
 export type PlayMode = "human_human" | "human_white" | "human_black" | "engine_engine" | "analysis";
@@ -59,6 +61,16 @@ export interface PlaySetup {
   initial_ms: number;
   increment_ms: number;
   infinite: boolean;
+  /** Null keeps the opponent at full strength. */
+  opponent_elo: number | null;
+  think_min_ms: number;
+  think_max_ms: number;
+}
+
+export interface PlayTuning {
+  opponent_elo: number | null;
+  think_min_ms: number;
+  think_max_ms: number;
 }
 
 export interface InfoLine {
@@ -86,6 +98,7 @@ export interface BoardArrow {
   to: string;
   color: string;
   source: string;
+  opacity?: number;
 }
 
 export interface ChannelInfo {

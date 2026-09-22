@@ -53,6 +53,18 @@ pub struct EngineConfig {
     pub limit_strength: bool,
     pub elo: u32,
     pub multipv: u32,
+    /// Default `EvalFile` name advertised by the binary. Empty when unknown.
+    #[serde(default)]
+    pub nnue_name: Option<String>,
+}
+
+/// Network embedded in the Stockfish 19 universal binary (`EvalFile` default).
+pub const STOCKFISH_19_NNUE: &str = "nn-1a298aa575a0.nnue";
+
+pub fn stockfish_major(name: &str) -> Option<u32> {
+    name.split(|c: char| !c.is_ascii_digit())
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse().ok())
 }
 
 impl EngineConfig {
@@ -70,6 +82,10 @@ impl EngineConfig {
             limit_strength: false,
             elo: 1500,
             multipv: 3,
+            nnue_name: info
+                .option("EvalFile")
+                .and_then(|opt| opt.default.clone())
+                .filter(|name| !name.is_empty() && name != "<empty>"),
         }
     }
 

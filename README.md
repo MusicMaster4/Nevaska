@@ -15,10 +15,10 @@ npm run tauri dev
 
 ## Engines
 
-Nevaska does not bundle Stockfish or lc0. Add a UCI binary from the engines panel:
+Stockfish 19 is fetched when the app is built or started with Tauri (`scripts/fetch-stockfish.mjs`) and registered on launch if you do not already have Stockfish 19. The binary embeds the network `nn-1a298aa575a0.nnue` (SFNNv16). Leave "Rede neural embutida" on so Stockfish uses that network. lc0 and any other UCI engine are still added from the engines panel:
 
-- **Stockfish** — pick the executable. Threads, Hash, a custom NNUE (`EvalFile`), and `UCI_Elo` when the engine advertises them.
-- **lc0** — same path, with `WeightsFile` for the network.
+- **Stockfish** — threads, hash, the embedded NNUE or a custom `EvalFile`, and `UCI_Elo` when the engine advertises them.
+- **lc0** — `WeightsFile` for the network.
 - **UCI** — any other UCI engine.
 
 Human vs engine, engine vs engine, and analysis all use the same process pipe.

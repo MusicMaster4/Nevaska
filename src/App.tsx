@@ -19,6 +19,7 @@ import {
   newGame,
   playMove,
   removeEngine,
+  setPlayTuning,
   stopSearch,
   undoMove,
   updateEngine,
@@ -30,6 +31,7 @@ import type {
   GameState,
   InfoLine,
   PlayMode,
+  PlaySetup,
 } from "./lib/types";
 import { EMPTY_GAME } from "./lib/types";
 import { checkForUpdate, channelLabel, type AvailableUpdate } from "./lib/update";
@@ -43,6 +45,45 @@ const TIMES = [
   { label: "10+0", initial: 600_000, inc: 0 },
   { label: "15+10", initial: 900_000, inc: 10_000 },
 ];
+
+const LINE_TONE = [
+  { color: "#2EAE6A", opacity: 0.96 },
+  { color: "#D4534E", opacity: 0.92 },
+  { color: "#D4534E", opacity: 0.5 },
+];
+
+const ELO_MIN = 1320;
+const ELO_MAX = 3190;
+
+function toneFor(index: number) {
+  return LINE_TONE[Math.min(index, LINE_TONE.length - 1)];
+}
+
+function embeddedNet(engine: EngineConfig) {
+  if (engine.eval_file) {
+    const parts = engine.eval_file.split(/[/\\]/);
+    return parts[parts.length - 1] || engine.eval_file;
+  }
+  if (engine.nnue_name) return engine.nnue_name;
+  if (/stockfish\s*19/i.test(engine.name)) return "nn-1a298aa575a0.nnue";
+  return "embutida no executável";
+}
+
+function moveTokens(sans: string[], ply: number) {
+  const out: { key: string; kind: "num" | "mv"; text: string; first?: boolean }[] = [];
+  sans.forEach((san, i) => {
+    const p = ply + i;
+    if (p % 2 === 0) out.push({ key: `n${i}`, kind: "num", text: `${p / 2 + 1}.` });
+    else if (i === 0) out.push({ key: `n${i}`, kind: "num", text: `${Math.floor(p / 2) + 1}…` });
+    out.push({ key: `m${i}`, kind: "mv", text: san, first: i === 0 });
+  });
+  return out;
+}
+
+function clampSeconds(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(120, Math.max(1, Math.round(value)));
+}
 
 function Icon({ title }: { title: string }) {
   const icons: Record<string, LucideIcon> = { New: Plus, Flip: FlipVertical2, Undo: Undo2, Play, Engines: Cpu, PGN: FileText, Updates: RefreshCw };
@@ -103,6 +144,10 @@ export default function App() {
   const [engineError, setEngineError] = useState("");
   const [showEngineArrows, setShowEngineArrows] = useState(false);
   const [arrowsHidden, setArrowsHidden] = useState(false);
+  const [limitElo, setLimitElo] = useState(false);
+  const [opponentElo, setOpponentElo] = useState(1600);
+  const [thinkMin, setThinkMin] = useState(2);
+  const [thinkMax, setThinkMax] = useState(5);
   const fenRef = useRef(game.fen);
   fenRef.current = game.fen;
   const arrowRevision = useRef(0);
@@ -136,7 +181,7 @@ export default function App() {
       const defaultEngine = installed.find((engine) => engine.kind === "stockfish") ?? installed[0];
       if (defaultEngine) {
         setAnalysisEngine(defaultEngine.id);
-        await configurePlay({ mode: "human_human", white_engine: null, black_engine: null, analysis_engine: defaultEngine.id, initial_ms: 600_000, increment_ms: 0, infinite: false });
+        await configurePlay({ mode: "human_human", white_engine: null, black_engine: null, analysis_engine: defaultEngine.id, initial_ms: 600_000, increment_ms: 0, infinite: false, opponent_elo: null, think_min_ms: 2_000, think_max_ms: 5_000 });
       }
     }).catch((err) => { if (isTauri()) setEngineError(String(err)); });
     listArrows().then(setArrows).catch(() => {});
@@ -179,8 +224,8 @@ export default function App() {
     return lines.filter((line) => line.fen === game.fen).flatMap((line, i) => {
       const mv = line.pv[0];
       if (!mv || mv.length < 4) return [];
-      const colors = ["#9EC9D9", "#6FA3B5", "#C5D4DC"];
-      return [{ from: mv.slice(0, 2), to: mv.slice(2, 4), color: colors[i % 3], source: "engine" }];
+      const tone = toneFor(i);
+      return [{ from: mv.slice(0, 2), to: mv.slice(2, 4), color: tone.color, opacity: tone.opacity, source: "engine" }];
     });
   }, [lines, game.fen]);
 
@@ -195,13 +240,65 @@ export default function App() {
     }
   }
 
+  function tuning() {
+    const lo = clampSeconds(Math.min(thinkMin, thinkMax));
+    const hi = clampSeconds(Math.max(thinkMin, thinkMax));
+    return {
+      opponent_elo: limitElo ? opponentElo : null,
+      think_min_ms: lo * 1000,
+      think_max_ms: hi * 1000,
+    };
+  }
+
+  function playSetup(partial: Partial<PlaySetup> = {}): PlaySetup {
+    return {
+      mode,
+      white_engine: whiteEngine,
+      black_engine: blackEngine,
+      analysis_engine: analysisEngine,
+      initial_ms: time.initial,
+      increment_ms: time.inc,
+      infinite: false,
+      ...tuning(),
+      ...partial,
+    };
+  }
+
+  async function commitEngine(next: EngineConfig) {
+    setEngines((all) => all.map((engine) => (engine.id === next.id ? next : engine)));
+    try {
+      setEngines(await updateEngine(next));
+    } catch (err) {
+      setEngineError(String(err));
+    }
+  }
+
+  function commitTuning(next?: { limit?: boolean; elo?: number; min?: number; max?: number }) {
+    const limit = next?.limit ?? limitElo;
+    const elo = next?.elo ?? opponentElo;
+    const min = clampSeconds(next?.min ?? thinkMin);
+    const max = clampSeconds(next?.max ?? thinkMax);
+    const lo = Math.min(min, max);
+    const hi = Math.max(min, max);
+    setLimitElo(limit);
+    setOpponentElo(elo);
+    setThinkMin(lo);
+    setThinkMax(hi);
+    void setPlayTuning({
+      opponent_elo: limit ? elo : null,
+      think_min_ms: lo * 1000,
+      think_max_ms: hi * 1000,
+    }).catch(() => {});
+  }
+
   async function onPlay(uci: string) {
     try {
       setLines([]);
       setGame(await playMove(uci));
       setArrows(await listArrows());
+      return true;
     } catch {
-      /* illegal or disconnected */
+      return false;
     }
   }
 
@@ -228,15 +325,7 @@ export default function App() {
 
   async function applyPlay(nextMode: PlayMode = mode) {
     setLines([]);
-    const state = await configurePlay({
-      mode: nextMode,
-      white_engine: whiteEngine,
-      black_engine: blackEngine,
-      analysis_engine: analysisEngine,
-      initial_ms: time.initial,
-      increment_ms: time.inc,
-      infinite: false,
-    });
+    const state = await configurePlay(playSetup({ mode: nextMode }));
     setMode(nextMode);
     setWhiteMs(time.initial);
     setBlackMs(time.initial);
@@ -341,8 +430,10 @@ export default function App() {
         <section className="board-col">
           <div className="board-frame">
             <div className={`eval-bar ${flipped ? "flipped" : ""}`} aria-label={`Avaliação das brancas: ${best ? scoreText(best) : "aguardando engine"}`} title={best ? `Brancas: ${scoreText(best)}` : "Aguardando análise"}>
-              <div className="eval-fill" style={{ height: `${evalHeight(best)}%` }} />
-              <span className="eval-score">{best ? scoreText(best) : "—"}</span>
+              <div className="eval-track">
+                <div className="eval-fill" style={{ height: `${evalHeight(best)}%` }} />
+              </div>
+              <span className="eval-score" style={flipped ? { top: `${Math.min(92, Math.max(8, evalHeight(best)))}%` } : { bottom: `${Math.min(92, Math.max(8, evalHeight(best)))}%` }}>{best ? scoreText(best) : "—"}</span>
             </div>
             <Board game={game} flipped={flipped} arrows={shownArrows} onPlay={onPlay} onArrow={onArrow} />
           </div>
@@ -377,13 +468,51 @@ export default function App() {
             <select id="analysis-engine" value={analysisEngine ?? ""} onChange={async (e) => {
               const id = e.target.value || null;
               setAnalysisEngine(id); setLines([]); setEngineError("");
-              try { await configurePlay({ mode, white_engine: whiteEngine, black_engine: blackEngine, analysis_engine: id, initial_ms: time.initial, increment_ms: time.inc, infinite: false }); } catch (err) { setEngineError(String(err)); }
+              try { await configurePlay(playSetup({ analysis_engine: id })); } catch (err) { setEngineError(String(err)); }
             }}>
               <option value="">Selecione um engine</option>
               {engines.map((engine) => <option key={engine.id} value={engine.id}>{engine.name}</option>)}
             </select>
           </div>
           {engineError && <p className="engine-error" role="alert">{engineError}</p>}
+          {analysisEngine && engines.find((engine) => engine.id === analysisEngine) && (() => {
+            const engine = engines.find((item) => item.id === analysisEngine)!;
+            return (
+              <div className="tune">
+                <label className="tune-label" htmlFor="analysis-threads">Núcleos<strong>{engine.threads}</strong></label>
+                <input id="analysis-threads" type="range" min={1} max={32} value={engine.threads} onChange={(e) => {
+                  const next = { ...engine, threads: Number(e.target.value) };
+                  setEngines((all) => all.map((item) => (item.id === engine.id ? next : item)));
+                }} onPointerUp={(e) => void commitEngine({ ...engine, threads: Number(e.currentTarget.value) })} />
+                <label className="tune-label" htmlFor="analysis-cache">Cache<strong>{engine.hash_mb} MB</strong></label>
+                <input id="analysis-cache" type="range" min={16} max={4096} step={16} value={engine.hash_mb} onChange={(e) => {
+                  const next = { ...engine, hash_mb: Number(e.target.value) };
+                  setEngines((all) => all.map((item) => (item.id === engine.id ? next : item)));
+                }} onPointerUp={(e) => void commitEngine({ ...engine, hash_mb: Number(e.currentTarget.value) })} />
+                {engine.kind === "stockfish" && (
+                  <div className="nnue-line">
+                    <label className="check-line">
+                      <input
+                        type="checkbox"
+                        checked={!engine.eval_file}
+                        onChange={async (e) => {
+                          if (e.target.checked) {
+                            await commitEngine({ ...engine, eval_file: null });
+                            return;
+                          }
+                          const file = await open({ multiple: false });
+                          if (!file || Array.isArray(file)) return;
+                          await commitEngine({ ...engine, eval_file: file });
+                        }}
+                      />
+                      Rede neural embutida
+                    </label>
+                    <span className="net-name">{embeddedNet(engine)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {!engines.length && <div className="empty-analysis">Adicione um engine para acompanhar a avaliação e os melhores lances.<button className="ghost" onClick={() => setPanel("engines")}>Adicionar engine</button></div>}
           <div className="position-verdict"><strong>{best ? scoreText(best) : "—"}</strong><span>{best?.score_mate != null ? `Mate a favor das ${best.score_mate >= 0 ? "brancas" : "pretas"}` : best?.score_cp != null ? Math.abs(best.score_cp) < 30 ? "Posição equilibrada" : `Vantagem das ${best.score_cp > 0 ? "brancas" : "pretas"}` : "Aguardando avaliação"}<small>Avaliação pela perspectiva das brancas</small></span></div>
           {best?.wdl && <div className="wdl"><div className="wdl-bar">{best.wdl.map((value, i) => <span key={i} style={{ flex: value }} />)}</div><div className="wdl-labels"><span>Brancas {best.wdl[0] / 10}%</span><span>Empate {best.wdl[1] / 10}%</span><span>Pretas {best.wdl[2] / 10}%</span></div></div>}
@@ -401,7 +530,20 @@ export default function App() {
           </dl>
           <p className="analysis-note">Um meio-lance é uma jogada de um dos lados. Profundidade não significa previsão garantida.</p>
           <div className="analysis-heading"><h3>Melhores continuações</h3><label><input type="checkbox" checked={showEngineArrows} onChange={(e) => { setShowEngineArrows(e.target.checked); setArrowsHidden(false); }} /> Setas</label></div>
-          <div className="variations">{currentLines.map((line, i) => <article key={line.multipv ?? i}><header><span>#{line.multipv ?? i + 1} · {line.pv_san[0] ?? line.pv[0]}</span><strong>{scoreText(line)}</strong></header><p>{(line.pv_san.length ? line.pv_san : line.pv).join(" ")}</p><small>Profundidade {line.depth ?? "—"}</small></article>)}</div>
+          <div className="variations">{currentLines.map((line, i) => {
+            const tone = toneFor(i);
+            const sans = line.pv_san.length ? line.pv_san : line.pv;
+            return (
+              <article className="pv" key={line.multipv ?? i} style={{ borderLeftColor: tone.color }}>
+                <header>
+                  <span className="pv-kicker"><i style={{ background: tone.color, opacity: tone.opacity }} />{line.multipv ?? i + 1}</span>
+                  <strong className="pv-score">{scoreText(line)}</strong>
+                </header>
+                <p className="pv-line">{moveTokens(sans, game.ply).map((token) => <span key={token.key} className={token.kind === "num" ? "num" : token.first ? "mv first" : "mv"}>{token.text}</span>)}</p>
+                <small>Profundidade {line.depth ?? "—"}</small>
+              </article>
+            );
+          })}</div>
           <div className="position-details"><span>{game.turn === "white" ? "Brancas" : "Pretas"} jogam{game.in_check ? " · Xeque" : ""}</span><label htmlFor="position-fen">Posição FEN</label><textarea id="position-fen" readOnly value={game.fen} /></div>
         </section>
       )}
@@ -420,22 +562,34 @@ export default function App() {
                 <strong>{engine.name}</strong>
                 <span className="kind">{engine.kind}</span>
               </header>
-              <div className="field">
-                <input
-                  type="range"
-                  min={1}
-                  max={32}
-                  value={engine.threads}
-                  onChange={(e) => {
-                    const next = { ...engine, threads: Number(e.target.value) };
-                    setEngines((all) => all.map((x) => (x.id === engine.id ? next : x)));
-                  }}
-                  onPointerUp={() => updateEngine(engines.find((x) => x.id === engine.id) ?? engine).then(setEngines)}
-                />
-              </div>
+              <label className="tune-label">Núcleos<strong>{engine.threads}</strong></label>
+              <input
+                type="range"
+                min={1}
+                max={32}
+                aria-label={`Núcleos ${engine.name}`}
+                value={engine.threads}
+                onChange={(e) => {
+                  const next = { ...engine, threads: Number(e.target.value) };
+                  setEngines((all) => all.map((x) => (x.id === engine.id ? next : x)));
+                }}
+                onPointerUp={(e) => void commitEngine({ ...engine, threads: Number(e.currentTarget.value) })}
+              />
+              <label className="tune-label">Cache<strong>{engine.hash_mb} MB</strong></label>
+              <input
+                type="range"
+                min={16}
+                max={4096}
+                step={16}
+                aria-label={`Cache ${engine.name}`}
+                value={engine.hash_mb}
+                onChange={(e) => {
+                  const next = { ...engine, hash_mb: Number(e.target.value) };
+                  setEngines((all) => all.map((x) => (x.id === engine.id ? next : x)));
+                }}
+                onPointerUp={(e) => void commitEngine({ ...engine, hash_mb: Number(e.currentTarget.value) })}
+              />
               <div className="row">
-                <span className="kind">{engine.threads} cores</span>
-                <span className="kind">{engine.hash_mb} MB</span>
                 <span className="kind">pv {engine.multipv}</span>
                 <label className="kind">Variantes <select aria-label={`Variantes ${engine.name}`} value={engine.multipv} onChange={async (e) => {
                   setLines([]);
@@ -453,43 +607,38 @@ export default function App() {
                   elo {engine.elo}
                 </label>
               </div>
-              <input
-                type="range"
-                min={16}
-                max={1024}
-                step={16}
-                value={engine.hash_mb}
-                onChange={(e) => {
-                  const next = { ...engine, hash_mb: Number(e.target.value) };
-                  setEngines((all) => all.map((x) => (x.id === engine.id ? next : x)));
-                }}
-                onPointerUp={() => updateEngine(engines.find((x) => x.id === engine.id) ?? engine).then(setEngines)}
-              />
               {engine.limit_strength && (
                 <input
                   type="range"
-                  min={1320}
-                  max={2400}
+                  min={ELO_MIN}
+                  max={ELO_MAX}
+                  aria-label={`Elo ${engine.name}`}
                   value={engine.elo}
                   onChange={(e) => {
                     const next = { ...engine, elo: Number(e.target.value) };
                     setEngines((all) => all.map((x) => (x.id === engine.id ? next : x)));
                   }}
-                  onPointerUp={() => updateEngine(engines.find((x) => x.id === engine.id) ?? engine).then(setEngines)}
+                  onPointerUp={(e) => void commitEngine({ ...engine, elo: Number(e.currentTarget.value) })}
                 />
               )}
               <div className="row">
+                {engine.kind === "stockfish" && (
+                  <span className="net-name">{engine.eval_file ? "NNUE personalizada" : embeddedNet(engine)}</span>
+                )}
                 <button
                   className="ghost"
                   onClick={async () => {
                     const file = await open({ multiple: false });
                     if (!file || Array.isArray(file)) return;
                     const key = engine.kind === "lc0" ? "weights_file" : "eval_file";
-                    setEngines(await updateEngine({ ...engine, [key]: file }));
+                    await commitEngine({ ...engine, [key]: file });
                   }}
                 >
                   {engine.kind === "lc0" ? "Weights" : "NNUE"}
                 </button>
+                {engine.kind === "stockfish" && engine.eval_file && (
+                  <button className="ghost" onClick={() => void commitEngine({ ...engine, eval_file: null })}>Usar rede embutida</button>
+                )}
                 <button className="ghost" onClick={async () => setEngines(await removeEngine(engine.id))}>
                   Remove
                 </button>
@@ -501,7 +650,7 @@ export default function App() {
 
       {panel === "game" && (
         <div className="panel">
-          <h2>Play</h2>
+          <h2>Jogar</h2>
           <div className="row">
             {TIMES.map((t) => (
               <button key={t.label} className={`chip ${time.label === t.label ? "active" : ""}`} onClick={() => setTime(t)}>
@@ -510,31 +659,84 @@ export default function App() {
             ))}
           </div>
           <div className="field">
-            <select value={whiteEngine ?? ""} onChange={(e) => setWhiteEngine(e.target.value || null)}>
-              <option value="">White</option>
+            <label htmlFor="play-white">Brancas</label>
+            <select id="play-white" value={whiteEngine ?? ""} onChange={(e) => setWhiteEngine(e.target.value || null)}>
+              <option value="">Humano</option>
               {engines.map((en) => (
                 <option key={en.id} value={en.id}>{en.name}</option>
               ))}
             </select>
-            <select value={blackEngine ?? ""} onChange={(e) => setBlackEngine(e.target.value || null)}>
-              <option value="">Black</option>
+            <label htmlFor="play-black">Pretas</label>
+            <select id="play-black" value={blackEngine ?? ""} onChange={(e) => setBlackEngine(e.target.value || null)}>
+              <option value="">Humano</option>
               {engines.map((en) => (
                 <option key={en.id} value={en.id}>{en.name}</option>
               ))}
             </select>
-            <select value={analysisEngine ?? ""} onChange={(e) => setAnalysisEngine(e.target.value || null)}>
-              <option value="">Analyze</option>
+            <label htmlFor="play-analysis">Análise durante a partida</label>
+            <select id="play-analysis" value={analysisEngine ?? ""} onChange={(e) => setAnalysisEngine(e.target.value || null)}>
+              <option value="">Nenhuma</option>
               {engines.map((en) => (
                 <option key={en.id} value={en.id}>{en.name}</option>
               ))}
             </select>
           </div>
+          <div className="tune">
+            <label className="check-line">
+              <input
+                type="checkbox"
+                checked={limitElo}
+                onChange={(e) => commitTuning({ limit: e.target.checked })}
+              />
+              Limitar o Elo do oponente
+            </label>
+            {limitElo && (
+              <>
+                <label className="tune-label" htmlFor="opponent-elo">Elo<strong>{opponentElo}</strong></label>
+                <input
+                  id="opponent-elo"
+                  type="range"
+                  min={ELO_MIN}
+                  max={ELO_MAX}
+                  value={opponentElo}
+                  onChange={(e) => setOpponentElo(Number(e.target.value))}
+                  onPointerUp={(e) => commitTuning({ elo: Number(e.currentTarget.value) })}
+                />
+              </>
+            )}
+            <p className="hint">Desmarcado, a engine joga na força máxima. O limite vale só para quem está jogando a partida.</p>
+            <div className="time-range">
+              <label>De
+                <input
+                  aria-label="Tempo mínimo da engine"
+                  type="number"
+                  min={1}
+                  max={120}
+                  value={thinkMin}
+                  onChange={(e) => setThinkMin(Number(e.target.value))}
+                  onBlur={() => commitTuning()}
+                />
+              </label>
+              <label>Até
+                <input
+                  aria-label="Tempo máximo da engine"
+                  type="number"
+                  min={1}
+                  max={120}
+                  value={thinkMax}
+                  onChange={(e) => setThinkMax(Number(e.target.value))}
+                  onBlur={() => commitTuning()}
+                />
+              </label>
+            </div>
+            <p className="hint">Segundos. A cada lance, a engine sorteia um tempo nesse intervalo, espera, e joga o melhor lance que tiver naquele momento.</p>
+          </div>
           <div className="row">
             <button className="solid" onClick={() => applyPlay(whiteEngine && blackEngine ? "engine_engine" : whiteEngine ? "human_black" : blackEngine ? "human_white" : "human_human")}>
-              Start
+              Começar
             </button>
-            <button className="ghost" onClick={() => applyPlay("analysis")}>Analyze</button>
-            <button className="ghost" onClick={() => stopSearch()}>Stop</button>
+            <button className="ghost" onClick={() => applyPlay("analysis")}>Analisar</button>
+            <button className="ghost" onClick={() => stopSearch()}>Parar</button>
           </div>
         </div>
       )}

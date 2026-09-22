@@ -20,7 +20,7 @@ Searches use the original FEN plus move history, including for imported position
 
 On the development workstation, Stockfish 19 universal x86-64 and Lc0 0.32.1 CUDA 12 were installed outside the repository. SHA-256 matched the official release assets. Real searches returned legal moves; Lc0 reported the RTX 3070 and cuda-fp16 backend. The native integration test exercised both installed engines, MultiPV, drag/drop, arrows, undo and the always-visible evaluation bar. Computer Use checked the browser UI; the native Windows Computer Use service was unavailable, so native interaction verification used the local WebView2 test connection instead.
 
-Sources: [Stockfish downloads](https://stockfishchess.org/download/) and [Lc0 downloads](https://lczero.org/play/download/). Engine binaries, neural networks and machine-specific registration are not part of the repository.
+Sources: [Stockfish downloads](https://stockfishchess.org/download/) and [Lc0 downloads](https://lczero.org/play/download/). Stockfish 19 is downloaded by `scripts/fetch-stockfish.mjs` and bundled with the app. Its neural network `nn-1a298aa575a0.nnue` is embedded in that binary. lc0 weights and machine-specific registration stay outside the repository.
 
 ## Visual assets
 

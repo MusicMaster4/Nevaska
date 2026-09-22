@@ -16,7 +16,14 @@ test.beforeEach(async ({ page }) => {
       unregisterCallback: (key: number) => callbacks.delete(key),
       invoke: async (cmd: string, args: Record<string, any>) => {
         if (cmd === 'plugin:event|listen') { listeners.set(args.event, args.handler); return id; }
-        if (cmd === 'list_engines') return [];
+        if (cmd === 'list_engines') return [{
+          id: 'sf', name: 'Stockfish 19', path: 'stockfish', kind: 'stockfish',
+          threads: 4, hash_mb: 128, eval_file: null, weights_file: null,
+          limit_strength: false, elo: 1500, multipv: 3, nnue_name: 'nn-1a298aa575a0.nnue',
+        }];
+        if (cmd === 'update_engine') return [args.config];
+        if (cmd === 'configure_play') return game;
+        if (cmd === 'set_play_tuning') { w.__tuning = args.tuning; return null; }
         if (cmd === 'list_arrows') return arrows;
         if (cmd === 'clear_arrows') { arrows = []; return arrows; }
         if (cmd === 'add_arrow') { arrows.push({ ...args, source: 'user' }); return [...arrows]; }
@@ -57,15 +64,15 @@ test('dragging, click moves, illegal drops, and flipped orientation', async ({ p
 test('right button accumulates arrows; left and middle buttons clear them', async ({ page }) => {
   await gesture(page, 'e2', 'e4', 'right');
   await gesture(page, 'd2', 'd4', 'right');
-  await expect(page.locator('.arrows line')).toHaveCount(2);
+  await expect(page.locator('.arrows .arrow')).toHaveCount(2);
   await page.locator('[data-square="a4"]').click({ button: 'middle' });
-  await expect(page.locator('.arrows line')).toHaveCount(0);
+  await expect(page.locator('.arrows .arrow')).toHaveCount(0);
   await gesture(page, 'e2', 'e4', 'right');
   await page.locator('[data-square="e2"]').click();
-  await expect(page.locator('.arrows line')).toHaveCount(0);
+  await expect(page.locator('.arrows .arrow')).toHaveCount(0);
   await gesture(page, 'e2', 'e4', 'right');
   await page.locator('.wordmark').click();
-  await expect(page.locator('.arrows line')).toHaveCount(0);
+  await expect(page.locator('.arrows .arrow')).toHaveCount(0);
 });
 
 test('live analysis is separate and evaluation stays visible', async ({ page }) => {
@@ -81,9 +88,32 @@ test('live analysis is separate and evaluation stays visible', async ({ page }) 
   const bar = (await page.locator('.eval-bar').boundingBox())!;
   const panel = (await page.locator('.analysis-panel').boundingBox())!;
   expect(bar.x + bar.width).toBeLessThan(panel.x);
+  await expect(page.locator('.eval-score')).toHaveCSS('writing-mode', 'horizontal-tb');
+  await expect(page.locator('#analysis-cache')).toBeVisible();
+  await expect(page.getByText('nn-1a298aa575a0.nnue')).toBeVisible();
+  await page.getByRole('checkbox', { name: 'Setas' }).check();
+  await expect(page.locator('.arrows .arrow')).toHaveCount(1);
+  await expect(page.locator('.arrow path[stroke="#2EAE6A"]')).toHaveCount(1);
   await page.screenshot({ path: 'test-results/analysis.png' });
   await page.getByRole('button', { name: 'Fechar painel' }).click();
   await expect(page.locator('.eval-score')).toHaveText('0.64');
   await expect(page.locator('.analysis-panel')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/board.png' });
+});
+
+test('play menu sets opponent elo and a random think window', async ({ page }) => {
+  await page.getByTitle('Play', { exact: true }).click();
+  await expect(page.getByText('Limitar o Elo do oponente')).toBeVisible();
+  await expect(page.getByLabel('Tempo mínimo da engine')).toHaveValue('2');
+  await expect(page.getByLabel('Tempo máximo da engine')).toHaveValue('5');
+  await page.getByText('Limitar o Elo do oponente').click();
+  await expect(page.locator('#opponent-elo')).toBeVisible();
+  await page.getByLabel('Tempo mínimo da engine').fill('5');
+  await page.getByLabel('Tempo máximo da engine').fill('10');
+  await page.getByLabel('Tempo máximo da engine').blur();
+  await expect.poll(() => page.evaluate(() => (window as any).__tuning)).toMatchObject({
+    opponent_elo: 1600,
+    think_min_ms: 5000,
+    think_max_ms: 10000,
+  });
 });

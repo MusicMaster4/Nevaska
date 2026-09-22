@@ -533,3 +533,23 @@ pub fn apply_engine_config(
     }
     Ok(sent)
 }
+
+/// `None` is full strength. `Some` enables `UCI_LimitStrength` and clamps Elo
+/// to the range the engine advertised.
+pub fn apply_strength_limit(session: &UciSession, elo: Option<u32>) -> Result<(), UciError> {
+    if !session.info.has_option("UCI_LimitStrength") {
+        return Ok(());
+    }
+    match elo {
+        None => session.set_option("UCI_LimitStrength", "false"),
+        Some(elo) => {
+            session.set_option("UCI_LimitStrength", "true")?;
+            if let Some(opt) = session.info.option("UCI_Elo") {
+                let min = opt.min.unwrap_or(1320).max(0) as u32;
+                let max = opt.max.unwrap_or(3190).max(min as i64) as u32;
+                session.set_option("UCI_Elo", &elo.clamp(min, max).to_string())?;
+            }
+            Ok(())
+        }
+    }
+}

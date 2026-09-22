@@ -9,9 +9,10 @@ use arrows::{arrow_from_move, arrow_from_squares, ArrowGeom, BoardArrow};
 use channel::{accept_payload, channel_of, endpoint_for, Channel};
 use chess::{ChessError, Game, GameState};
 use engines::{
-    engines_file, load_engines, probe_engine, save_engines, EngineConfig, EngineKind,
+    engines_file, load_engines, probe_engine, save_engines, stockfish_major, EngineConfig,
+    EngineKind, STOCKFISH_19_NNUE,
 };
-use play::{analysis_limits, engine_search, PlayMode, TimeControl};
+use play::{analysis_limits, engine_search, sample_think_ms, think_salt, PlayMode, TimeControl};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -30,6 +31,10 @@ struct Inner {
     time: TimeControl,
     white_ms: u64,
     black_ms: u64,
+    /// None keeps the playing engine at full strength.
+    opponent_elo: Option<u32>,
+    think_min_ms: u64,
+    think_max_ms: u64,
 }
 
 struct AppState {
@@ -56,6 +61,9 @@ impl AppState {
                 time: TimeControl::classical_ten(),
                 white_ms: TimeControl::classical_ten().initial_ms,
                 black_ms: TimeControl::classical_ten().initial_ms,
+                opponent_elo: None,
+                think_min_ms: 2_000,
+                think_max_ms: 5_000,
             }),
             sessions: Mutex::new(HashMap::new()),
             data_dir: Mutex::new(None),
@@ -228,6 +236,19 @@ struct PlaySetup {
     initial_ms: u64,
     increment_ms: u64,
     infinite: bool,
+    #[serde(default)]
+    opponent_elo: Option<u32>,
+    #[serde(default)]
+    think_min_ms: u64,
+    #[serde(default)]
+    think_max_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayTuning {
+    opponent_elo: Option<u32>,
+    think_min_ms: u64,
+    think_max_ms: u64,
 }
 
 #[tauri::command]
@@ -247,9 +268,30 @@ fn configure_play(app: AppHandle, state: State<AppState>, setup: PlaySetup) -> R
         };
         inner.white_ms = setup.initial_ms;
         inner.black_ms = setup.initial_ms;
+        inner.opponent_elo = setup.opponent_elo;
+        inner.think_min_ms = setup.think_min_ms;
+        inner.think_max_ms = setup.think_max_ms;
     }
     resume_searches(&app, &state);
     Ok(state.inner.lock().expect("state").game.state())
+}
+
+#[tauri::command]
+fn set_play_tuning(state: State<AppState>, tuning: PlayTuning) -> Result<(), String> {
+    {
+        let mut inner = state.inner.lock().expect("state");
+        inner.opponent_elo = tuning.opponent_elo;
+        inner.think_min_ms = tuning.think_min_ms;
+        inner.think_max_ms = tuning.think_max_ms;
+    }
+    // A search already in flight keeps its process. The next move spawns again
+    // so the new Elo is applied.
+    state
+        .sessions
+        .lock()
+        .expect("sessions")
+        .retain(|key, _| !key.ends_with(":false"));
+    Ok(())
 }
 
 #[tauri::command]
@@ -376,18 +418,23 @@ fn ensure_session(state: &AppState, engine_id: &str, analysis: bool) -> Result<A
             return Ok(Arc::clone(existing));
         }
     }
-    let config = {
+    let (config, elo) = {
         let inner = state.inner.lock().expect("state");
-        inner
+        let config = inner
             .engines
             .iter()
             .find(|e| e.id == engine_id)
             .cloned()
-            .ok_or_else(|| "engine not configured".to_string())?
+            .ok_or_else(|| "engine not configured".to_string())?;
+        let elo = if analysis { None } else { inner.opponent_elo };
+        (config, elo)
     };
     let mut session = UciSession::spawn(&config.path).map_err(|e| e.to_string())?;
     session.handshake().map_err(|e| e.to_string())?;
     config.apply(&session).map_err(|e| e.to_string())?;
+    if !analysis {
+        uci::apply_strength_limit(&session, elo).map_err(|e| e.to_string())?;
+    }
     session.new_game().map_err(|e| e.to_string())?;
     let session = Arc::new(session);
     state
@@ -443,6 +490,15 @@ fn kick_search(app: &AppHandle, state: &AppState, engine_id: &str, analysis: boo
         let inner = state.inner.lock().expect("state");
         let limits = if analysis {
             analysis_limits()
+        } else if let Some(ms) = sample_think_ms(
+            inner.think_min_ms,
+            inner.think_max_ms,
+            think_salt(inner.game.state().ply),
+        ) {
+            GoLimits {
+                movetime: Some(ms),
+                ..GoLimits::default()
+            }
         } else {
             inner.time.go_limits(inner.white_ms, inner.black_ms)
         };
@@ -511,9 +567,71 @@ fn load_persisted(app: &AppHandle, state: &AppState) {
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = std::fs::create_dir_all(&dir);
         *state.data_dir.lock().expect("dir") = Some(dir.clone());
-        if let Ok(engines) = load_engines(&engines_file(dir)) {
+        if let Ok(mut engines) = load_engines(&engines_file(dir.clone())) {
+            for engine in &mut engines {
+                if engine.nnue_name.is_none()
+                    && engine.kind == EngineKind::Stockfish
+                    && stockfish_major(&engine.name) == Some(19)
+                {
+                    engine.nnue_name = Some(STOCKFISH_19_NNUE.to_string());
+                }
+            }
             state.inner.lock().expect("state").engines = engines;
         }
+    }
+}
+
+fn bundled_stockfish_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let file = if cfg!(windows) { "stockfish.exe" } else { "stockfish" };
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("stockfish")
+        .join(file);
+    if manifest.exists() {
+        return Some(manifest);
+    }
+    let dir = app.path().resource_dir().ok()?;
+    [
+        dir.join("resources").join("stockfish").join(file),
+        dir.join("stockfish").join(file),
+        dir.join(file),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+/// Register the bundled Stockfish 19 when the user does not already have it.
+fn install_bundled_stockfish(app: &AppHandle, state: &AppState) {
+    let Some(path) = bundled_stockfish_path(app) else {
+        return;
+    };
+    let path_str = path.to_string_lossy().to_string();
+    {
+        let inner = state.inner.lock().expect("state");
+        let present = inner.engines.iter().any(|engine| {
+            engine.kind == EngineKind::Stockfish
+                && std::path::Path::new(&engine.path).exists()
+                && stockfish_major(&engine.name).unwrap_or(0) >= 19
+        });
+        if present || inner.engines.iter().any(|engine| engine.path == path_str || engine.id == "bundled-stockfish-19") {
+            return;
+        }
+    }
+    let Ok((info, _)) = probe_engine(&path_str) else {
+        return;
+    };
+    let mut config = EngineConfig::from_probe(&path_str, &info);
+    config.id = "bundled-stockfish-19".into();
+    let engines = {
+        let mut inner = state.inner.lock().expect("state");
+        if inner.engines.iter().any(|engine| engine.id == config.id || engine.path == config.path) {
+            return;
+        }
+        inner.engines.push(config);
+        inner.engines.clone()
+    };
+    if let Some(dir) = state.data_dir.lock().expect("dir").clone() {
+        let _ = save_engines(&engines_file(dir), &engines);
     }
 }
 
@@ -532,6 +650,7 @@ pub fn run() {
         .setup(|app| {
             let state = app.state::<AppState>();
             load_persisted(app.handle(), &state);
+            install_bundled_stockfish(app.handle(), &state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -550,6 +669,7 @@ pub fn run() {
             remove_engine,
             probe_engine_path,
             configure_play,
+            set_play_tuning,
             stop_search,
             add_arrow,
             clear_arrows,

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/version.test.ts src/lib/update.test.ts scripts/release-scripts.test.mjs scripts/workflows.test.mjs && tsx scripts/board-probe.mjs",
+    "test": "node --test src/lib/version.test.ts src/lib/update.test.ts src/lib/motion.test.ts scripts/release-scripts.test.mjs scripts/workflows.test.mjs && tsx scripts/board-probe.mjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --tests --features test-support",
     "test:ui": "playwright test",
     "version:next": "node scripts/release-version.mjs --dry-run"

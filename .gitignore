@@ -16,6 +16,8 @@ dist-ssr
 *.key
 *.key.pub
 src-tauri/icons/icon-source.jpg
+src-tauri/resources/stockfish/stockfish
+src-tauri/resources/stockfish/stockfish.exe
 
 # Editor directories and files
 .vscode/*

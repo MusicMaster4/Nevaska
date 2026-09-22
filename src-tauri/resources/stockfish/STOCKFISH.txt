@@ -1,0 +1,13 @@
+Stockfish 19
+https://github.com/official-stockfish/Stockfish/releases/tag/sf_19
+
+Stockfish is free software under GPL-3.0-or-later.
+Source and license: https://github.com/official-stockfish/Stockfish
+
+scripts/fetch-stockfish.mjs downloads the official universal binary.
+That file is not stored in git.
+
+The network nn-1a298aa575a0.nnue (SFNNv16) is embedded in the Stockfish 19
+binary. Nevaska leaves EvalFile unset so the engine uses this network.
+It is the network shipped with Stockfish 19, which is the latest stable
+release. Development builds published after it are pre-releases.

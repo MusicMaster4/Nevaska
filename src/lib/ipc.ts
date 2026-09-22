@@ -5,6 +5,7 @@ import type {
   EngineConfig,
   GameState,
   PlaySetup,
+  PlayTuning,
 } from "./types";
 
 export async function gameState(): Promise<GameState> {
@@ -61,6 +62,10 @@ export async function removeEngine(id: string): Promise<EngineConfig[]> {
 
 export async function configurePlay(setup: PlaySetup): Promise<GameState> {
   return invoke("configure_play", { setup });
+}
+
+export async function setPlayTuning(tuning: PlayTuning): Promise<void> {
+  return invoke("set_play_tuning", { tuning });
 }
 
 export async function stopSearch(): Promise<void> {

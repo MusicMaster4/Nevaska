@@ -47,6 +47,18 @@ function download(url, dest) {
   });
 }
 
+async function extract(archive, destDir) {
+  // Git for Windows puts GNU tar first on PATH. That tar reads "C:" as a remote
+  // host ("Cannot connect to C: resolve failed") and does not unpack zip files.
+  // Windows ships bsdtar, which extracts the Stockfish zip from a drive path.
+  if (process.platform === "win32") {
+    const systemTar = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+    await exec(systemTar, ["-xf", archive, "-C", destDir]);
+    return;
+  }
+  await exec("tar", ["-xf", path.basename(archive)], { cwd: destDir });
+}
+
 async function findBinary(dir) {
   const { readdir } = await import("node:fs/promises");
   const found = [];
@@ -81,7 +93,7 @@ try {
   const archive = path.join(tmp, path.basename(url));
   console.log(`Downloading Stockfish 19 from ${url}`);
   await download(url, archive);
-  await exec("tar", ["-xf", archive, "-C", tmp]);
+  await extract(archive, tmp);
   await copyFile(await findBinary(tmp), dest);
   if (process.platform !== "win32") await chmod(dest, 0o755);
   console.log(`Stockfish 19 ready at ${dest}`);

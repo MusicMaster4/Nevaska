@@ -158,10 +158,11 @@ export function Board({
   const lastTo = last?.slice(2, 4);
 
   const kingSq = useMemo(() => {
-    if (!game.in_check) return null;
+    if (!game.in_check && game.result.kind !== "checkmate") return null;
     const code = game.turn === "white" ? "wK" : "bK";
     return game.pieces.find((piece) => piece.code === code)?.square ?? null;
   }, [game]);
+  const mated = game.result.kind === "checkmate";
 
   const dests = useMemo(() => {
     if (!selected) return new Set<string>();
@@ -310,7 +311,7 @@ export function Board({
             dark ? "dark" : "light",
             selected === name ? "selected" : "",
             lastFrom === name || lastTo === name ? "last" : "",
-            kingSq === name ? "check" : "",
+            kingSq === name ? (mated ? "mated" : "check") : "",
           ].join(" ")}
           onPointerDown={(e) => onPointerDown(e, name)}
         >

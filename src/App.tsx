@@ -33,6 +33,7 @@ import type {
   PlayMode,
   PlaySetup,
 } from "./lib/types";
+import { describeOutcome } from "./lib/outcome";
 import { EMPTY_GAME } from "./lib/types";
 import { checkForUpdate, channelLabel, type AvailableUpdate } from "./lib/update";
 
@@ -112,12 +113,7 @@ function scoreText(info: InfoLine) {
   return "·";
 }
 
-function resultText(game: GameState) {
-  const r = game.result;
-  if (r.kind === "playing") return null;
-  if (r.kind === "checkmate") return r.winner === "white" ? "1–0" : "0–1";
-  return "½–½";
-}
+
 
 export default function App() {
   const [game, setGame] = useState<GameState>(EMPTY_GAME);
@@ -151,6 +147,7 @@ export default function App() {
   const fenRef = useRef(game.fen);
   fenRef.current = game.fen;
   const arrowRevision = useRef(0);
+  const pinnedEval = useRef<InfoLine | null>(null);
 
   useEffect(() => {
     setLines((prev) => prev.filter((line) => line.fen === game.fen));
@@ -220,6 +217,11 @@ export default function App() {
 
   const currentLines = lines.filter((line) => line.fen === game.fen);
   const best = currentLines[0];
+  const scored = best && (best.score_cp != null || best.score_mate != null) ? best : undefined;
+  // Keep the last drawn score until the engine reports the position after a move.
+  if (scored) pinnedEval.current = scored;
+  const barEval = scored ?? pinnedEval.current ?? undefined;
+  const outcome = describeOutcome(game.result);
   const engineArrows: BoardArrow[] = useMemo(() => {
     return lines.filter((line) => line.fen === game.fen).flatMap((line, i) => {
       const mv = line.pv[0];
@@ -387,7 +389,7 @@ export default function App() {
   );
 
   return (
-    <div className={`app ${panel !== "none" ? "panel-open" : ""}`}>
+    <div className={`app ${panel !== "none" ? "panel-open" : ""} ${outcome ? "ended" : ""}`}>
       <div className="snow" aria-hidden>
         {flakes.map((f, i) => (
           <span
@@ -428,14 +430,23 @@ export default function App() {
       </header>
       <main className="stage">
         <section className="board-col">
-          <div className="board-frame">
-            <div className={`eval-bar ${flipped ? "flipped" : ""}`} aria-label={`Avaliação das brancas: ${best ? scoreText(best) : "aguardando engine"}`} title={best ? `Brancas: ${scoreText(best)}` : "Aguardando análise"}>
-              <div className="eval-track">
-                <div className="eval-fill" style={{ height: `${evalHeight(best)}%` }} />
+          <div className="board-stack">
+            {outcome && (
+              <div className={`result-strip ${outcome.tone}`} role="status">
+                <p className="result-kicker">Fim de partida</p>
+                <strong>{outcome.title}</strong>
+                <p className="result-line"><span>{outcome.detail}</span><em>{outcome.score}</em></p>
               </div>
-              <span className="eval-score" style={flipped ? { top: `${Math.min(92, Math.max(8, evalHeight(best)))}%` } : { bottom: `${Math.min(92, Math.max(8, evalHeight(best)))}%` }}>{best ? scoreText(best) : "—"}</span>
+            )}
+            <div className="board-frame">
+            <div className={`eval-bar ${flipped ? "flipped" : ""}`} data-eval={scored ? "live" : barEval ? "held" : "empty"} aria-label={barEval ? `Avaliação das brancas: ${scoreText(barEval)}` : "Aguardando análise"} title={barEval ? `Brancas: ${scoreText(barEval)}` : "Aguardando análise"}>
+              <div className="eval-track">
+                <div className="eval-fill" style={{ height: `${evalHeight(barEval)}%` }} />
+              </div>
+              <span className="eval-score" style={flipped ? { top: `${Math.min(92, Math.max(8, evalHeight(barEval)))}%` } : { bottom: `${Math.min(92, Math.max(8, evalHeight(barEval)))}%` }}>{barEval ? scoreText(barEval) : "—"}</span>
             </div>
             <Board game={game} flipped={flipped} arrows={shownArrows} onPlay={onPlay} onArrow={onArrow} />
+            </div>
           </div>
         </section>
         <aside className="dock">
@@ -453,7 +464,13 @@ export default function App() {
             <ChartNoAxesCombined size={20} /><span>Análise ao vivo<small>{best ? `${scoreText(best)} · profundidade ${best.depth ?? "—"}` : "Abrir estatísticas do engine"}</small></span>
           </button>
           <div>
-            {resultText(game) && <div className="over">{resultText(game)}</div>}
+            {outcome && (
+              <div className={`outcome-dock ${outcome.tone}`} aria-hidden="true">
+                <strong>{outcome.title}</strong>
+                <span>{outcome.detail}</span>
+                <em>{outcome.score}</em>
+              </div>
+            )}
             <div className={`clock ${topActive ? "dim" : ""}`}>{formatClock(botClock)}</div>
           </div>
         </aside>
@@ -544,7 +561,7 @@ export default function App() {
               </article>
             );
           })}</div>
-          <div className="position-details"><span>{game.turn === "white" ? "Brancas" : "Pretas"} jogam{game.in_check ? " · Xeque" : ""}</span><label htmlFor="position-fen">Posição FEN</label><textarea id="position-fen" readOnly value={game.fen} /></div>
+          <div className="position-details"><span>{outcome ? `${outcome.title}. ${outcome.detail}` : `${game.turn === "white" ? "Brancas" : "Pretas"} jogam${game.in_check ? " · Xeque" : ""}`}</span><label htmlFor="position-fen">Posição FEN</label><textarea id="position-fen" readOnly value={game.fen} /></div>
         </section>
       )}
 

@@ -112,6 +112,102 @@ test('live analysis is separate and evaluation stays visible', async ({ page }) 
   await page.screenshot({ path: 'test-results/board.png' });
 });
 
+test('last move paints the origin and the destination yellow', async ({ page }) => {
+  const pieces = EMPTY_GAME.pieces.map((piece) => (piece.square === 'g1' ? { ...piece, square: 'f3' } : piece));
+  await page.evaluate((game) => (window as any).__testEmit('game-state', game), {
+    ...EMPTY_GAME,
+    fen: 'rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1',
+    turn: 'black' as const,
+    pieces,
+    last_move: 'g1f3',
+    moves: [{ uci: 'g1f3', san: 'Nf3' }],
+    ply: 1,
+  });
+  await expect(page.locator('[data-square="g1"]')).toHaveClass(/last/);
+  await expect(page.locator('[data-square="f3"]')).toHaveClass(/last/);
+  await expect(page.locator('[data-square="e2"]')).not.toHaveClass(/last/);
+  await expect(page.locator('[data-square="g1"]')).toHaveCSS('background-color', 'rgb(212, 174, 42)');
+  await expect(page.locator('[data-square="f3"]')).toHaveCSS('background-color', 'rgb(246, 216, 74)');
+  await page.screenshot({ path: 'test-results/last-move.png' });
+});
+
+test('a finished game says who won and why', async ({ page }) => {
+  const pieces = EMPTY_GAME.pieces.map((piece) => (piece.square === 'd1' ? { ...piece, square: 'h5' } : piece));
+  await page.evaluate((game) => (window as any).__testEmit('game-state', game), {
+    ...EMPTY_GAME,
+    turn: 'black' as const,
+    in_check: true,
+    result: { kind: 'checkmate', winner: 'white' },
+    pieces,
+    last_move: 'd1h5',
+    moves: [{ uci: 'd1h5', san: 'Qh5#' }],
+    ply: 1,
+  });
+  const status = page.getByRole('status');
+  await expect(status).toContainText('Fim de partida');
+  await expect(status).toContainText('Xeque-mate');
+  await expect(status).toContainText('As brancas vencem');
+  await expect(status).toContainText('1–0');
+  await expect(page.locator('[data-square="e8"]')).toHaveClass(/mated/);
+  await expect(page.locator('.outcome-dock')).toContainText('As brancas vencem');
+  const board = (await page.locator('.board-wrap').boundingBox())!;
+  const banner = (await status.boundingBox())!;
+  expect(banner.y).toBeGreaterThanOrEqual(0);
+  expect(banner.y + banner.height).toBeLessThanOrEqual(board.y + 1);
+  expect(banner.x).toBeGreaterThanOrEqual(0);
+  expect(banner.x + banner.width).toBeLessThanOrEqual(1280);
+  await page.screenshot({ path: 'test-results/mate.png' });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const narrowBoard = (await page.locator('.board-wrap').boundingBox())!;
+  const narrow = (await status.boundingBox())!;
+  expect(narrow.y).toBeGreaterThanOrEqual(0);
+  expect(narrow.y + narrow.height).toBeLessThanOrEqual(narrowBoard.y + 1);
+  expect(narrow.x).toBeGreaterThanOrEqual(0);
+  expect(narrow.x + narrow.width).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: 'test-results/mate-mobile.png' });
+
+  await page.setViewportSize({ width: 1280, height: 840 });
+  await page.evaluate((game) => (window as any).__testEmit('game-state', game), {
+    ...EMPTY_GAME,
+    result: { kind: 'stalemate' },
+  });
+  await expect(status).toContainText('Empate');
+  await expect(status).toContainText('Afogamento');
+  await expect(status).toContainText('½–½');
+});
+
+test('eval bar holds its place until the next score', async ({ page }) => {
+  const start = EMPTY_GAME.fen;
+  const next = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+  await page.evaluate((fen) => (window as any).__testEmit('engine-info', {
+    fen, depth: 12, multipv: 1, score_cp: 180, score_mate: null,
+    pv: ['e2e4'], pv_san: ['e4'],
+  }), start);
+  await expect(page.locator('.eval-score')).toHaveText('1.80');
+  await expect(page.locator('.eval-bar')).toHaveAttribute('data-eval', 'live');
+  const height = await page.locator('.eval-fill').getAttribute('style');
+
+  await page.evaluate((game) => (window as any).__testEmit('game-state', game), {
+    ...EMPTY_GAME,
+    fen: next,
+    turn: 'black' as const,
+    last_move: 'e2e4',
+    ply: 1,
+    moves: [{ uci: 'e2e4', san: 'e4' }],
+  });
+  await expect(page.locator('.eval-bar')).toHaveAttribute('data-eval', 'held');
+  await expect(page.locator('.eval-score')).toHaveText('1.80');
+  await expect(page.locator('.eval-fill')).toHaveAttribute('style', height!);
+
+  await page.evaluate((fen) => (window as any).__testEmit('engine-info', {
+    fen, depth: 11, multipv: 1, score_cp: -40, score_mate: null,
+    pv: ['e7e5'], pv_san: ['e5'],
+  }), next);
+  await expect(page.locator('.eval-score')).toHaveText('-0.40');
+  await expect(page.locator('.eval-bar')).toHaveAttribute('data-eval', 'live');
+});
+
 test('play menu sets opponent elo and a random think window', async ({ page }) => {
   await page.getByTitle('Play', { exact: true }).click();
   await expect(page.getByText('Limitar o Elo do oponente')).toBeVisible();

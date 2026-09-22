@@ -249,13 +249,10 @@ button {
 .piece {
   position: absolute;
   width: 12.5%;
-  height: 12.5%;
-  display: grid;
-  place-items: center;
-  padding: 6%;
+  aspect-ratio: 1;
   z-index: 2;
   pointer-events: none;
-  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.28));
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
 }
 
 .piece.slide {
@@ -272,9 +269,13 @@ button {
 
 .ghost-piece { cursor: grabbing; filter: drop-shadow(0 8px 10px rgba(0, 0, 0, 0.35)); }
 
-.piece-svg, .piece svg {
-  width: 100%;
-  height: 100%;
+.piece svg {
+  position: absolute;
+  left: 8%;
+  top: 8%;
+  width: 84%;
+  height: 84%;
+  display: block;
 }
 
 .arrows {

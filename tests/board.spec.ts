@@ -47,6 +47,17 @@ async function gesture(page: import('@playwright/test').Page, from: string, to: 
   await page.mouse.up({ button });
 }
 
+test('starting pieces are drawn on their squares', async ({ page }) => {
+  await expect(page.locator('.piece svg')).toHaveCount(32);
+  const drawn = await page.locator('.piece svg').first().evaluate((svg) => {
+    const box = svg.getBoundingClientRect();
+    return { width: box.width, height: box.height };
+  });
+  expect(drawn.width).toBeGreaterThan(24);
+  expect(drawn.height).toBeGreaterThan(24);
+  await page.screenshot({ path: 'test-results/pieces.png' });
+});
+
 test('dragging, click moves, illegal drops, and flipped orientation', async ({ page }) => {
   await gesture(page, 'e2', 'e4');
   await expect.poll(() => page.evaluate(() => (window as any).__lastMove)).toBe('e2e4');
